@@ -2,7 +2,7 @@
 //
 // Reads the sealed snapshot (/input/snapshot.json, or --input <file|dir>), runs the value model in
 // lib/model.ts, and writes into the output directory (/output, or MAKEFUN_OUTPUT_DIR, or --output):
-//   board.json    { rows: [...], model, calibration, excluded }  the ranked board the gate reads
+//   board.json    { model, summary, excluded, rows }           the ranked board the gate reads
 //   data.js       window.RADAR = {...}                          everything the page renders
 //   dashboard/    copied from this repository
 //   screenshots/  copied from this repository
@@ -15,7 +15,7 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { FAMILIES, GAS, K, MODEL_VERSION, SnapshotError, boardIssue, buildRadar, median, parseSnapshot, stepStrings } from './lib/model.ts';
+import { FAMILIES, GAS, GAS_DEFAULT, MODEL_VERSION, RM, SnapshotError, boardIssue, buildRadar, median, parseSnapshot, recordsToken, stepStrings, verdictLine } from './lib/model.ts';
 import type { Row, Snapshot } from './lib/model.ts';
 import { buildDossier } from './vendor/makefun-board.ts';
 
@@ -49,6 +49,7 @@ const radar = buildRadar(snapshot);
 const covered = new Set(radar.rows.map((r) => r.slug));
 const uncovered = snapshot.watchlist.filter((w) => !covered.has(w));
 if (uncovered.length > 0) fail(`watchlist slugs the snapshot does not list: ${uncovered.join(', ')}`);
+const fit = radar.fit;
 
 // ---------------------------------------------------------------- board.json
 
@@ -70,10 +71,17 @@ const boardRow = (r: Row) => ({
   change_7d: r.change_7d,
   listed_at: r.listed_at,
   tokenless_days: r.age_days,
-  score: r.score,
-  model: r.factors,
-  farm: { chain: r.plan.chain, capital_usd: r.plan.capital, gas_and_fees_usd: r.plan.fees_total, hands_on_minutes: r.plan.hands_on_minutes, weeks: r.plan.weeks },
-  farm_steps: stepStrings(r.plan),
+  log_multiple: r.log_multiple,
+  peer_token_odds: r.odds,
+  expected_value_usd: r.expected_value_usd,
+  verdict: r.econ.verdict,
+  verdict_reason: r.econ.why,
+  farm: {
+    chain: r.plan.chain, capital_usd: r.plan.capital, gas_and_fees_usd: r.plan.fees_total, opportunity_cost_usd: r.econ.opp,
+    total_cost_usd: r.econ.cost, hands_on_hours: r.econ.hours, weeks: r.plan.weeks, airdrop_usd: r.econ.drop,
+    expected_payoff_usd: r.econ.ev, net_usd: r.econ.net, net_per_hour_usd: r.econ.per_hour, net_per_1k_usd: r.econ.per_1k,
+  },
+  farm_steps: [...stepStrings(r.plan), verdictLine(r)],
 });
 const rows = radar.rows.map(boardRow);
 const issue = boardIssue(rows, snapshot);
@@ -82,32 +90,41 @@ const silent = rows.filter((r) => r.lane !== 'related' && !r.farm_steps.some((t)
 if (silent.length > 0) fail(`${silent[0]!.slug}'s plan never says it records no token`);
 
 const lanes = { watchlist: 0, early: 0, related: 0 };
-for (const r of radar.rows) lanes[r.lane]++;
+const verdicts = { Farm: 0, Watch: 0, Skip: 0 };
+for (const r of radar.rows) {
+  lanes[r.lane]++;
+  verdicts[r.econ.verdict]++;
+}
 const values = radar.rows.map((r) => r.implied_value_usd);
 const summary = {
   rows: rows.length,
   lanes,
+  verdicts,
   watchlist_covered: `${snapshot.watchlist.length}/${snapshot.watchlist.length}`,
-  calibration_peers: radar.peers.length,
+  value_peers: radar.peers.length,
+  odds_population: radar.pop.length,
   total_implied_usd: values.reduce((a, v) => a + v, 0),
   median_implied_usd: median(values),
-  global_multiple: radar.calibration.global.multiple,
   top: rows.slice(0, 5).map((r) => `${r.rank}. ${r.name} ${r.implied_value_usd}`),
 };
 
 const modelNote = {
   version: MODEL_VERSION,
-  formula: 'implied = tvl_usd x category multiple x momentum x track x breadth x confidence x related',
-  multiple: 'median market-cap/TVL of the snapshot protocols whose token trades, per category, shrunk toward its family and the global median by sample size',
-  constants: K,
+  code: 'dashboard/model.js (the page runs the same file and checks every value against this board)',
+  value: 'implied = TVL x exp(beta.x + family effect + category effect), fitted on the snapshot protocols whose token trades; x = [1, ln(TVL/$100M), tanh(change_7d/20), ln(1 + years listed), no listing date, ln chains]',
+  odds: 'peer_token_odds = logistic fit, on every non-CEX snapshot protocol, of whether it records a token',
+  verdict: 'cost = gas and fees + capital x 5%/yr over the window; payoff = odds x 10% community share of implied value x (half flat over TVL/$25k farmers, half pro rata)',
+  assumptions: { ...RM.A, gas_usd_per_tx_and_funding: GAS },
+  fit,
   as_of: snapshot.as_of,
   source: snapshot.source,
   note: 'Implied value is this radar\'s claim of what a token would be worth if the protocol\'s record stayed as it is; it does not predict whether or when a token is issued. A protocol here records no token in the snapshot; that is not proof it has none.',
 };
 mkdirSync(out, { recursive: true });
-writeFileSync(join(out, 'board.json'), `${JSON.stringify({ model: modelNote, summary, calibration: radar.calibration, excluded: radar.excluded, rows })}\n`);
+writeFileSync(join(out, 'board.json'), `${JSON.stringify({ model: modelNote, summary, excluded: radar.excluded, rows })}\n`);
 
 // ---------------------------------------------------------------- data.js
+// The page refits from these arrays, in this order: peers and pop exactly as buildRadar fed the model.
 
 const usedChains = [...new Set(radar.rows.flatMap((r) => r.chains))].filter((c) => GAS[c] !== undefined).sort();
 const data = {
@@ -117,16 +134,18 @@ const data = {
   version: MODEL_VERSION,
   universe: snapshot.protocols.length,
   watchlist: snapshot.watchlist,
-  K,
   families: FAMILIES,
   gas: Object.fromEntries(usedChains.map((c) => [c, GAS[c]])),
-  calibration: radar.calibration,
-  peers: radar.peers.map((p) => [p.name, p.category, p.symbol, p.tvl_usd, p.mcap_usd]),
+  gas_default: GAS_DEFAULT,
+  fit,
+  peers: radar.peers.map((p) => [p.slug, p.name, p.category, p.symbol, p.tvl_usd, p.mcap_usd, p.change_7d, p.listed_at, p.chains.length]),
+  pop: radar.pop.map((p) => [p.slug, p.category, p.tvl_usd, p.change_7d, p.listed_at, p.chains.length, recordsToken(p) ? 1 : 0]),
   excluded: radar.excluded,
   rows: radar.rows.map((r) => ({
     rank: r.rank, slug: r.slug, name: r.name, cat: r.category, fam: r.family, chains: r.chains,
     tvl: r.tvl_usd, c7: r.change_7d, listed: r.listed_at, age: r.age_days, lane: r.lane, rel: r.related_token,
-    v: r.implied_value_usd, lo: r.implied_low_usd, hi: r.implied_high_usd, score: r.score, f: r.factors, plan: r.plan,
+    v: r.implied_value_usd, lo: r.implied_low_usd, hi: r.implied_high_usd, y: r.log_multiple, odds: r.odds, ev: r.expected_value_usd,
+    econ: { ...r.econ, weight: undefined }, plan: r.plan,
   })),
 };
 writeFileSync(join(out, 'data.js'), `window.RADAR=${JSON.stringify(data)};\n`);
@@ -148,7 +167,7 @@ for (const n of shots) if (!IMAGE_NAME.test(n)) fail(`screenshots/${n} is not a 
 writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEXT_MAX_BYTES, screenshots: { max: 4, max_bytes: 524_288 }, dashboard: { max_files: 400, max_bytes: 4_194_304 } }));
 
 process.stdout.write(
-  `token radar: ${snapshot.protocols.length} protocols, ${radar.peers.length} calibration peers, ${rows.length} rows ` +
+  `token radar: ${snapshot.protocols.length} protocols, ${radar.peers.length} value peers, ${radar.pop.length} odds population, ${rows.length} rows ` +
     `(${lanes.watchlist} watchlist, ${lanes.early} early, ${lanes.related} related-token)\n` +
     `token radar: wrote board.json, data.js, dashboard/ (${dash.length} files), screenshots/ (${shots.length}) and dossier.json to ${out}\n`,
 );

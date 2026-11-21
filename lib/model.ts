@@ -1,25 +1,21 @@
-// Token launch radar: the value model and the farm-plan generator.
+// Token launch radar: the universe, the farm-plan generator and the glue to the fitted model.
 //
-// One sealed snapshot in, one ranked board out. Every number below comes from the snapshot's own fields
-// (tvl_usd, change_7d, listed_at, chains, category, mcap_usd) and a handful of stated constants. No
-// protocol name is special-cased anywhere: the same functions score every row.
-//
-//   1. Calibrate. The snapshot's protocols that DO record a trading token (gecko_id and mcap_usd present,
-//      CEXes left out) give a market-cap / TVL multiple each. Medians are taken in log space per
-//      category and per family of categories, then shrunk toward the parent level by sample size:
-//        log m_family   = (n_f * med_f + K * med_global) / (n_f + K)
-//        log m_category = (n_c * med_c + K * log m_family) / (n_c + K)
-//   2. Score. implied = tvl x m_category x momentum x track x breadth x confidence x related
-//        momentum   = 1 + 0.25 * tanh(change_7d / 20)                   (0.75 .. 1.25, null -> 1)
-//        track      = 0.70 -> 1.10 over the first 540 tokenless days, flat to 3 years, then easing to
-//                     0.95 at 5 years (no listed_at -> 0.85)
-//        breadth    = min(1.15, 0.97 + 0.055 * ln(chains))
-//        confidence = 0.85 + 0.15 * clamp(log10(tvl / 5M) / log10(200), 0, 1)
-//        related    = 0.25 when a related token already trades, else 1
-//   3. Band. low / high = implied x exp(-/+ h), h from the family's interquartile spread of log multiples,
-//      widened when the category's own sample is thin.
-//   4. Plan. Each row gets a farm plan from its category family, its cheapest sensible chain (a stated
-//      gas table in US dollars per transaction), its TVL (capital size) and its age (holding window).
+// One sealed snapshot in, one ranked board out. The fitting itself lives in dashboard/model.js, a plain
+// script that this file imports and that the page runs again in the browser, so the board and the page
+// share one implementation:
+//   1. Value. log(mcap/TVL) of the snapshot's protocols whose token trades (CEXes left out) is regressed
+//      on ln TVL, tanh(change_7d/20), ln(1 + years listed), a no-date flag and ln chains, with family and
+//      category effects shrunk by empirical-Bayes weights. Ridge strength picked by 5-fold error.
+//   2. Odds. A penalised logistic on every non-CEX protocol: how often one like this records a token.
+//   3. Plan. Each row gets a farm plan from its category, its cheapest sensible chain (the GAS table
+//      below, an assumption in US dollars per transaction), its TVL (capital) and its age (window).
+//   4. Verdict. dashboard/model.js econ(): plan cost + opportunity cost vs odds x airdrop share.
+// No protocol name is special-cased anywhere: the same functions score every row.
+import '../dashboard/model.js';
+
+/** The fitted model, as dashboard/model.js defines it on globalThis. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const RM: any = (globalThis as any).RadarModel;
 
 export interface SnapshotProtocol {
   slug: string;
@@ -42,34 +38,9 @@ export interface Snapshot {
   watchlist: string[];
 }
 
-export const MODEL_VERSION = 'radar-mc/tvl-3';
+export const MODEL_VERSION = 'radar-fit-4';
 
-/** Every constant the model uses; the dashboard prints them and recomputes rows from them. */
-export const K = {
-  shrink: 3,
-  mult_min: 0.02,
-  mult_max: 2.0,
-  mom_amp: 0.25,
-  mom_scale: 20,
-  track_start: 0.7,
-  track_peak: 1.1,
-  track_ramp_days: 540,
-  track_plateau_days: 1095,
-  track_late: 0.95,
-  track_fade_days: 730,
-  track_unknown: 0.85,
-  breadth_base: 0.97,
-  breadth_slope: 0.055,
-  breadth_cap: 1.15,
-  conf_floor: 0.85,
-  conf_tvl_lo: 5_000_000,
-  conf_tvl_span: 200,
-  related_haircut: 0.25,
-  band_min: 0.25,
-  band_max: 1.2,
-} as const;
-
-/** Categories grouped into families: the calibration falls back to a family before the global median. */
+/** Categories grouped into families: the value fit shrinks a category toward its family, then the global fit. */
 export const FAMILIES: Record<string, string[]> = {
   Lending: ['Lending', 'CDP', 'CDP Manager', 'Uncollateralized Lending', 'Collateral Management'],
   Trading: ['Dexs', 'Derivatives', 'Options', 'Options Vault', 'Prediction Market', 'Interest Rate Derivatives', 'Synthetics', 'OTC Marketplace', 'NFT Marketplace', 'Launchpad'],
@@ -83,7 +54,11 @@ export function familyOf(category: string | null): string {
   return (category !== null && FAMILY_OF.get(category)) || 'Other';
 }
 
-/** Estimated cost of one ordinary DeFi transaction, in US dollars, and the cost to fund the chain. */
+/**
+ * ASSUMPTION, not snapshot data: [US dollars for one ordinary DeFi transaction (approve, deposit, swap),
+ * US dollars to fund the chain (exchange withdrawal or bridge)], typical late-2026 levels. The one table
+ * every plan cost, per-chain comparison and verdict reads; the page prints it whole.
+ */
 export const GAS: Record<string, [number, number]> = {
   Ethereum: [2.5, 5], Bitcoin: [1.5, 3], Tron: [1.2, 1], Cardano: [0.2, 1], Binance: [0.08, 0.5],
   Avalanche: [0.05, 1], Polygon: [0.02, 0.5], Arbitrum: [0.03, 0.5], Base: [0.02, 0.5], Optimism: [0.02, 0.5],
@@ -105,118 +80,54 @@ export const FUND_ASSET: Record<string, string> = {
   Bitcoin: 'BTC', BSquared: 'BTC', Mezo: 'BTC', CORE: 'BTC', Stacks: 'STX', RSK: 'BTC', Bittensor: 'TAO', Cardano: 'ADA',
   Ripple: 'XRP', Tron: 'USDT', TON: 'USDT', Flare: 'XRP (as FXRP) or USDT0', Algorand: 'USDC or ALGO', Kava: 'USDT',
 };
-const GAS_DEFAULT: [number, number] = [0.1, 2];
+export const GAS_DEFAULT: [number, number] = [0.1, 2];
 
 // ------------------------------------------------------------------ helpers
 
-const DAY_MS = 86_400_000;
 const r4 = (n: number): number => Math.round(n * 1e4) / 1e4;
-const clamp = (x: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, x));
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
+/** Whole days from listed_at to as_of (dashboard/model.js ageDays, so the page counts the same). */
 export function ageDays(asOf: string, listedAt: string | null): number | null {
-  if (listedAt === null) return null;
-  const a = Date.parse(`${asOf}T00:00:00Z`);
-  const b = Date.parse(`${listedAt}T00:00:00Z`);
-  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
-  return Math.max(0, Math.floor((a - b) / DAY_MS));
+  return RM.ageDays(asOf, listedAt);
 }
 
 /** Median of numbers (mean of the middle two for an even count). */
 export function median(xs: number[]): number {
-  const a = [...xs].sort((x, y) => x - y);
-  const m = a.length >> 1;
-  return a.length % 2 ? a[m]! : (a[m - 1]! + a[m]!) / 2;
-}
-function quantile(xs: number[], q: number): number {
-  const a = [...xs].sort((x, y) => x - y);
-  const pos = (a.length - 1) * q;
-  const lo = Math.floor(pos);
-  const hi = Math.ceil(pos);
-  return a[lo]! + (a[hi]! - a[lo]!) * (pos - lo);
+  return RM.median(xs);
 }
 
 export function recordsToken(p: SnapshotProtocol): boolean {
   return p.gecko_id !== null || p.symbol !== null || p.mcap_usd !== null;
 }
 
-// ------------------------------------------------------------------ calibration
+// ------------------------------------------------------------------ model inputs
 
-export interface Peer {
+/** One protocol as dashboard/model.js reads it. data.js carries the same arrays in the same order. */
+export interface ModelInput {
   slug: string;
-  name: string;
-  category: string | null;
-  symbol: string | null;
-  tvl_usd: number;
-  mcap_usd: number;
+  cat: string;
+  fam: string;
+  tvl: number;
+  mcap: number | null;
+  c7: number | null;
+  age: number | null;
+  nch: number;
+}
+export function modelInput(s: Snapshot, p: SnapshotProtocol): ModelInput {
+  return { slug: p.slug, cat: p.category ?? 'Uncategorised', fam: familyOf(p.category), tvl: p.tvl_usd, mcap: p.mcap_usd, c7: p.change_7d, age: ageDays(s.as_of, p.listed_at), nch: p.chains.length };
 }
 
-export interface Calibration {
-  global: { n: number; multiple: number; spread: number };
-  families: Record<string, { n: number; median: number | null; multiple: number; spread: number }>;
-  categories: Record<string, { n: number; median: number | null; multiple: number; family: string }>;
+/** The value fit's peers: protocols whose token trades, with a market cap and TVL; CEXes left out. */
+export function peersOf(s: Snapshot): SnapshotProtocol[] {
+  return s.protocols.filter((p) => p.gecko_id !== null && p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0 && p.category !== 'CEX');
 }
 
-/** The calibration set: protocols whose token trades, with a market cap and TVL; CEXes left out. */
-export function peersOf(s: Snapshot): Peer[] {
-  return s.protocols
-    .filter((p) => p.gecko_id !== null && p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0 && p.category !== 'CEX')
-    .map((p) => ({ slug: p.slug, name: p.name, category: p.category, symbol: p.symbol, tvl_usd: p.tvl_usd, mcap_usd: p.mcap_usd! }));
+/** The odds fit's population: every protocol but the CEXes, labelled by whether it records a token. */
+export function populationOf(s: Snapshot): SnapshotProtocol[] {
+  return s.protocols.filter((p) => p.category !== 'CEX');
 }
 
-/** Interquartile spread of log multiples, as a normal sigma (IQR / 1.349); 1.0 when fewer than 4. */
-function spreadOf(logs: number[]): number {
-  return logs.length < 4 ? 1 : (quantile(logs, 0.75) - quantile(logs, 0.25)) / 1.349;
-}
-
-export function calibrate(peers: Peer[], categories: (string | null)[]): Calibration {
-  const logOf = (p: Peer): number => Math.log(p.mcap_usd / p.tvl_usd);
-  const all = peers.map(logOf);
-  const gMed = median(all);
-  const gSpread = spreadOf(all);
-  const families: Calibration['families'] = {};
-  for (const fam of [...Object.keys(FAMILIES), 'Other']) {
-    const logs = peers.filter((p) => familyOf(p.category) === fam).map(logOf);
-    const n = logs.length;
-    const med = n > 0 ? median(logs) : null;
-    const lm = med === null ? gMed : (n * med + K.shrink * gMed) / (n + K.shrink);
-    const spread = (n * (n >= 4 ? spreadOf(logs) : gSpread) + K.shrink * gSpread) / (n + K.shrink);
-    families[fam] = { n, median: med === null ? null : r4(Math.exp(med)), multiple: r4(clamp(Math.exp(lm), K.mult_min, K.mult_max)), spread: r4(spread) };
-  }
-  const cats: Calibration['categories'] = {};
-  const names = [...new Set(categories.map((c) => c ?? 'Uncategorised'))].sort(cmp);
-  for (const c of names) {
-    const fam = familyOf(c === 'Uncategorised' ? null : c);
-    const logs = peers.filter((p) => (p.category ?? 'Uncategorised') === c).map(logOf);
-    const n = logs.length;
-    const med = n > 0 ? median(logs) : null;
-    const famLog = Math.log(families[fam]!.multiple);
-    const lm = med === null ? famLog : (n * med + K.shrink * famLog) / (n + K.shrink);
-    cats[c] = { n, median: med === null ? null : r4(Math.exp(med)), multiple: r4(clamp(Math.exp(lm), K.mult_min, K.mult_max)), family: fam };
-  }
-  return { global: { n: all.length, multiple: r4(Math.exp(gMed)), spread: r4(gSpread) }, families, categories: cats };
-}
-
-// ------------------------------------------------------------------ factors
-
-export function momentumFactor(change7d: number | null): number {
-  if (change7d === null) return 1;
-  return 1 + K.mom_amp * Math.tanh(change7d / K.mom_scale);
-}
-
-export function trackFactor(age: number | null): number {
-  if (age === null) return K.track_unknown;
-  if (age <= K.track_plateau_days) return K.track_start + (K.track_peak - K.track_start) * Math.min(age, K.track_ramp_days) / K.track_ramp_days;
-  return K.track_peak - (K.track_peak - K.track_late) * Math.min(age - K.track_plateau_days, K.track_fade_days) / K.track_fade_days;
-}
-
-export function breadthFactor(chains: number): number {
-  return Math.min(K.breadth_cap, K.breadth_base + K.breadth_slope * Math.log(Math.max(1, chains)));
-}
-
-export function confidenceFactor(tvl: number): number {
-  return K.conf_floor + (1 - K.conf_floor) * clamp(Math.log10(tvl / K.conf_tvl_lo) / Math.log10(K.conf_tvl_span), 0, 1);
-}
 
 // ------------------------------------------------------------------ the universe
 
@@ -486,13 +397,20 @@ export function stepStrings(plan: Plan): string[] {
 
 // ------------------------------------------------------------------ the board
 
-export interface Factors {
-  multiple: number;
-  momentum: number;
-  track: number;
-  breadth: number;
-  confidence: number;
-  related: number;
+export interface Econ {
+  opp: number;
+  cost: number;
+  hours: number;
+  farmers: number;
+  weight: number;
+  drop: number[];
+  ev: number;
+  net: number;
+  roi: number;
+  per_hour: number;
+  per_1k: number;
+  verdict: 'Farm' | 'Watch' | 'Skip';
+  why: string;
 }
 
 export interface Row {
@@ -512,80 +430,94 @@ export interface Row {
   implied_value_usd: number;
   implied_low_usd: number;
   implied_high_usd: number;
-  score: number;
-  factors: Factors;
+  log_multiple: number;
+  odds: number;
+  expected_value_usd: number;
+  econ: Econ;
   plan: Plan;
 }
 
-/**
- * Half-width of the band in log space: the standard error of the category's median multiple,
- * 1.2533 x sigma_family / sqrt(n_category + K), plus 0.1 when the tokenless age is unknown.
- */
-export function bandHalfWidth(cal: Calibration, category: string | null, age: number | null): number {
-  const cat = cal.categories[category ?? 'Uncategorised']!;
-  const fam = cal.families[cat.family]!;
-  return clamp((1.2533 * fam.spread) / Math.sqrt(cat.n + K.shrink) + (age === null ? 0.1 : 0), K.band_min, K.band_max);
-}
-
-export function score(p: SnapshotProtocol, age: number | null, lane: Lane, cal: Calibration): { value: number; f: Factors } {
-  const f: Factors = {
-    multiple: cal.categories[p.category ?? 'Uncategorised']!.multiple,
-    momentum: r4(momentumFactor(p.change_7d)),
-    track: r4(trackFactor(age)),
-    breadth: r4(breadthFactor(p.chains.length)),
-    confidence: r4(confidenceFactor(p.tvl_usd)),
-    related: lane === 'related' ? K.related_haircut : 1,
-  };
-  const value = Math.max(1, Math.round(p.tvl_usd * f.multiple * f.momentum * f.track * f.breadth * f.confidence * f.related));
-  return { value, f };
+/** The verdict as one farm_steps string: the cost, the airdrop assumption, the payoff and the call. */
+export function verdictLine(r: Row): string {
+  const e = r.econ;
+  const m = (n: number): string => (n < 0 ? '-' : '') + (Math.abs(n) >= 1e6 ? `$${(Math.abs(n) / 1e6).toFixed(1)}M` : money(Math.abs(n)));
+  return `Verdict: ${e.verdict}, ${e.why}. Cost ${m(e.cost)} (${m(r.plan.fees_total)} gas and fees + ${m(e.opp)} of capital idle at ${Math.round(RM.A.opp_rate * 100)}%/yr for ${r.plan.weeks} weeks) and ${e.hours.toFixed(1)} h. ` +
+    `If a token comes, ${Math.round(RM.A.share[1] * 100)}% of ${m(r.implied_value_usd)} to the community, split half flat over ~${money(e.farmers).slice(1)} farmers and half pro rata, gives this wallet ~${m(e.drop[1])} (${m(e.drop[0])}-${m(e.drop[2])}); ` +
+    `at ${Math.round(r.odds * 100)}% peer odds that is ${m(e.ev)} expected, ${m(e.net)} net, ${m(e.per_hour)}/h.`;
 }
 
 export interface Radar {
   rows: Row[];
-  calibration: Calibration;
-  peers: Peer[];
+  fit: ReturnType<typeof summary>;
+  peers: SnapshotProtocol[];
+  pop: SnapshotProtocol[];
+  candidates: { p: SnapshotProtocol; lane: Lane; related: string | null }[];
   excluded: Universe['excluded'];
+}
+
+/** What the page prints and checks: fitted terms, shrinkage, held-out scores, odds fit. */
+function summary(R: any) {
+  const hold = (h: any) => ({ n: h.n, folds: h.folds, mdae: h.mdae, base_mdae: h.base_mdae, rho: h.rho, within2: h.within2, base_within2: h.base_within2 });
+  const groups = (E: any) => Object.fromEntries(Object.entries(E.groups).map(([k, g]: [string, any]) => [k, [g.n, r4(g.mean), r4(g.w), r4(g.u)]]));
+  return {
+    terms: R.terms,
+    beta: R.value.beta.map(r4),
+    se: R.value.se.map(r4),
+    lambda: R.value.lambda,
+    ridge: R.ridge,
+    ablate: R.ablate,
+    tau2: { family: r4(R.value.fam.tau2), category: r4(R.value.cat.tau2) },
+    sigma2: r4(R.value.cat.sigma2),
+    families: groups(R.value.fam),
+    categories: groups(R.value.cat),
+    kfold: hold(R.kfold),
+    loco: hold(R.loco),
+    band: R.band.map(r4),
+    band80: R.band80.map(r4),
+    odds: { lambda: R.odds.lambda, b: R.odds.b.map(r4), fams: R.odds.d.fams, cats: R.odds.d.cats, cv: R.odds_cv },
+    holdout: R.kfold.slug.map((s: string, i: number) => [s, r4(R.kfold.pred[i])]),
+  };
 }
 
 export function buildRadar(s: Snapshot): Radar {
   const peers = peersOf(s);
+  const pop = populationOf(s);
   const uni = universe(s);
-  const cal = calibrate(peers, [...uni.ranked.map((u) => u.p.category), ...peers.map((p) => p.category)]);
   const watch = new Set(s.watchlist);
-  const scored = uni.ranked.map(({ p, lane, related }) => {
-    const age = ageDays(s.as_of, p.listed_at);
-    const { value, f } = score(p, age, lane, cal);
-    return { p, lane, related, age, value, f };
+  const plans = uni.ranked.map(({ p, lane }) => buildPlan(p, ageDays(s.as_of, p.listed_at), lane));
+  const R = RM.build({
+    peers: peers.map((p) => modelInput(s, p)),
+    pop: pop.map((p) => ({ ...modelInput(s, p), tok: recordsToken(p) ? 1 : 0 })),
+    rows: uni.ranked.map(({ p, lane }, i) => ({ ...modelInput(s, p), lane, plan: plans[i] })),
   });
-  scored.sort((a, b) => b.value - a.value || cmp(a.p.slug, b.p.slug));
-  const lnMax = Math.log(scored[0]!.value);
-  const lnMin = Math.log(scored[scored.length - 1]!.value);
-  const rows: Row[] = scored.map((x, i) => {
-    const h = bandHalfWidth(cal, x.p.category, x.age);
-    return {
-      rank: i + 1,
-      slug: x.p.slug,
-      name: x.p.name,
-      category: x.p.category,
-      family: familyOf(x.p.category),
-      chains: x.p.chains,
-      tvl_usd: x.p.tvl_usd,
-      change_7d: x.p.change_7d,
-      listed_at: x.p.listed_at,
-      age_days: x.age,
-      lane: x.lane,
-      watchlist: watch.has(x.p.slug),
-      related_token: x.related,
-      implied_value_usd: x.value,
-      implied_low_usd: Math.max(1, Math.round(x.value * Math.exp(-h))),
-      implied_high_usd: Math.max(1, Math.round(x.value * Math.exp(h))),
-      score: Math.round((100 * (Math.log(x.value) - lnMin)) / Math.max(1e-9, lnMax - lnMin)),
-      factors: x.f,
-      plan: buildPlan(x.p, x.age, x.lane),
-    };
-  });
-  return { rows, calibration: cal, peers, excluded: uni.excluded };
+  const scored = uni.ranked.map((u, i) => ({ ...u, m: R.rows[i], plan: plans[i]! }));
+  scored.sort((a, b) => b.m.v - a.m.v || cmp(a.p.slug, b.p.slug));
+  const rows: Row[] = scored.map((x, i) => ({
+    rank: i + 1,
+    slug: x.p.slug,
+    name: x.p.name,
+    category: x.p.category,
+    family: familyOf(x.p.category),
+    chains: x.p.chains,
+    tvl_usd: x.p.tvl_usd,
+    change_7d: x.p.change_7d,
+    listed_at: x.p.listed_at,
+    age_days: ageDays(s.as_of, x.p.listed_at),
+    lane: x.lane,
+    watchlist: watch.has(x.p.slug),
+    related_token: x.related,
+    implied_value_usd: x.m.v,
+    implied_low_usd: x.m.lo,
+    implied_high_usd: x.m.hi,
+    log_multiple: r4(x.m.y),
+    odds: x.m.odds,
+    expected_value_usd: x.m.ev,
+    econ: x.m.econ,
+    plan: x.plan,
+  }));
+  return { rows, fit: summary(R), peers, pop, candidates: uni.ranked, excluded: uni.excluded };
 }
+
 
 // ------------------------------------------------------------------ input and checks
 
