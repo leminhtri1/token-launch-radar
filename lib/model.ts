@@ -5,7 +5,7 @@
 // share one implementation:
 //   1. Value. log(mcap/TVL) of the snapshot's protocols whose token trades (CEXes left out) is regressed
 //      on ln TVL, tanh(change_7d/20), ln(1 + years listed), a no-date flag and ln chains, with family and
-//      category effects shrunk by empirical-Bayes weights. Ridge strength picked by 5-fold error.
+//      category effects shrunk by empirical-Bayes weights; terms kept by backward elimination on 5-fold error.
 //   2. Odds. A penalised logistic on every non-CEX protocol: how often one like this records a token.
 //   3. Plan. Each row gets a farm plan from its category, its cheapest sensible chain (the GAS table
 //      below, an assumption in US dollars per transaction), its TVL (capital) and its age (window).
@@ -118,9 +118,28 @@ export function modelInput(s: Snapshot, p: SnapshotProtocol): ModelInput {
   return { slug: p.slug, cat: p.category ?? 'Uncategorised', fam: familyOf(p.category), tvl: p.tvl_usd, mcap: p.mcap_usd, c7: p.change_7d, age: ageDays(s.as_of, p.listed_at), nch: p.chains.length };
 }
 
-/** The value fit's peers: protocols whose token trades, with a market cap and TVL; CEXes left out. */
+/** A name ending in a version marker ("Aave V2", "X 2.0"): the house watchlist rule's own test. */
+const VERSION = /\s(v\d+(\.\d+)?|\d+\.\d+)$/i;
+
+/** Why a protocol whose token trades is kept out of the value fit, or null when it is a peer. */
+export function peerSkip(p: SnapshotProtocol): string | null {
+  if (p.category === 'CEX') return 'centralised exchange';
+  if (WRAP_CATEGORIES.has(p.category ?? '')) return 'wrapped, staked or bridged product: its cap is the parent token\'s';
+  if (VERSION.test(p.name)) return 'versioned product: its cap is the parent token\'s';
+  return null;
+}
+
+/** Protocols whose token trades, with a market cap and TVL. */
+export function tradingOf(s: Snapshot): SnapshotProtocol[] {
+  return s.protocols.filter((p) => p.gecko_id !== null && p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0);
+}
+
+/**
+ * The value fit's peers: the trading protocols the house watchlist rule would keep, so the fit learns
+ * from the same kind of protocol the board ranks (no CEX, no wrapped, staked, bridged or versioned product).
+ */
 export function peersOf(s: Snapshot): SnapshotProtocol[] {
-  return s.protocols.filter((p) => p.gecko_id !== null && p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0 && p.category !== 'CEX');
+  return tradingOf(s).filter((p) => peerSkip(p) === null);
 }
 
 /** The odds fit's population: every protocol but the CEXes, labelled by whether it records a token. */
@@ -463,8 +482,8 @@ function summary(R: any) {
     terms: R.terms,
     beta: R.value.beta.map(r4),
     se: R.value.se.map(r4),
-    lambda: R.value.lambda,
-    ridge: R.ridge,
+    kept: R.value.off.map((o: boolean) => !o),
+    path: R.path,
     ablate: R.ablate,
     tau2: { family: r4(R.value.fam.tau2), category: r4(R.value.cat.tau2) },
     sigma2: r4(R.value.cat.sigma2),

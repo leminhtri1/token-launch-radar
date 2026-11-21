@@ -5,8 +5,8 @@
 //
 // VALUE  log(mcap/TVL) of the protocols whose token trades = X·beta + family effect + category effect
 //        X = [1, ln(TVL/$100M), tanh(change_7d/20), ln(1 + years listed), no listing date, ln(chains)]
-//        beta by least squares; the slopes after ln TVL carry a ridge whose strength is picked by 5-fold
-//        error, so a term that does not hold up held-out is shrunk toward 0. Family and category effects
+//        beta by least squares. Terms are kept by backward elimination on 5-fold error: a term (or the
+//        category effects) stays only if dropping it makes held-out error worse. Family and category effects
 //        are their peers' mean residual times an empirical-Bayes weight w = n·tau² / (n·tau² + sigma²),
 //        tau² fitted by moments: a category with one trading peer barely moves off the global fit.
 //        implied value = TVL × exp(fitted log multiple); band = the 25th..75th percentile of held-out
@@ -21,7 +21,7 @@
   /** Stated assumptions: transforms, fold counts and farm economics. No value-model weight is here. */
   var A = {
     mom_scale: 20, folds: 5, backfit: 10, irls: 25, lambdas: [0.5, 2, 8, 32],
-    ridge: [0, 10, 100, 1000, 10000], related: 0.25, band: [0.25, 0.75], band80: [0.1, 0.9],
+    related: 0.25, band: [0.25, 0.75], band80: [0.1, 0.9],
     opp_rate: 0.05, share: [0.05, 0.10, 0.15], deposit: 25000, min_farmers: 1000, flat: 0.5,
     farm_hour: 40, farm_roi: 3, farm_odds: 0.2
   };
@@ -77,6 +77,7 @@
 
   // ------------------------------------------------------------ features
   var TERMS = ['intercept', 'ln TVL / $100M', 'tanh(7d / 20)', 'ln(1 + years listed)', 'no listing date', 'ln chains'];
+  var PARTS = TERMS.concat(['category effects']);
   /** p = {tvl, c7, age (days or null), nch}. */
   function x(p) {
     return [1, Math.log(p.tvl / 1e8), p.c7 === null ? 0 : Math.tanh(p.c7 / A.mom_scale),
@@ -97,20 +98,15 @@
   }
 
   /**
-   * Fit the value model on peers [{slug, cat, fam, tvl, mcap, c7, age, nch}]. o.lambda is the ridge on the
-   * standardised slopes, o.drop a term forced to zero, o.nocat turns the category effects off (ablation).
+   * Fit the value model on peers [{slug, cat, fam, tvl, mcap, c7, age, nch}]. off[j] forces term j to 0;
+   * off[6] turns the family and category effects off.
    */
-  function fitValue(peers, o) {
+  function fitValue(peers, off) {
     var X = peers.map(x), y = peers.map(function (p) { return Math.log(p.mcap / p.tvl); });
     var fk = peers.map(function (p) { return p.fam; }), ck = peers.map(function (p) { return p.cat; });
     var uf = y.map(function () { return 0; }), uc = uf.slice(), w = uf.map(function () { return 1; });
     var n = peers.length, beta, F, C, i;
-    var ridge = TERMS.map(function (t, j) {
-      if (j === o.drop) return 1e12;
-      if (j < 2) return 1e-9;
-      var col = X.map(function (r) { return r[j]; }), m = sum(col) / n;
-      return 1e-9 + o.lambda * sum(col.map(function (v) { return (v - m) * (v - m); })) / n;
-    });
+    var ridge = TERMS.map(function (t, j) { return off[j] ? 1e12 : 1e-9; });
     for (var it = 0; it < A.backfit; it++) {
       var yy = y.map(function (v, j) { return v - uf[j] - uc[j]; });
       beta = wls(X, yy, w, ridge);
@@ -118,13 +114,13 @@
       F = eb(r, fk);
       var r2 = r.map(function (v, j) { return v - F.groups[fk[j]].u; });
       C = eb(r2, ck);
-      if (o.nocat) [F, C].forEach(function (E) { Object.keys(E.groups).forEach(function (k) { E.groups[k].w = E.groups[k].u = 0; }); });
+      if (off[6]) [F, C].forEach(function (E) { Object.keys(E.groups).forEach(function (k) { E.groups[k].w = E.groups[k].u = 0; }); });
       for (i = 0; i < y.length; i++) { uf[i] = F.groups[fk[i]].u; uc[i] = C.groups[ck[i]].u; }
     }
     // standard errors: sigma² × diag((X'X + ridge)^-1), one solve per term
     var P = TERMS.length, XtX = TERMS.map(function (t, j) { return TERMS.map(function (u, k) { return sum(X.map(function (r) { return r[j] * r[k]; })) + (j === k ? ridge[j] : 0); }); });
     var se = TERMS.map(function (t, j) { var e = new Array(P).fill(0); e[j] = 1; return Math.sqrt(C.sigma2 * solve(XtX, e)[j]); });
-    return { beta: beta, se: se, fam: F, cat: C, n: n, lambda: o.lambda };
+    return { beta: beta, se: se, fam: F, cat: C, n: n, off: off.slice() };
   }
   /** Fitted log multiple and its parts for a protocol {tvl, c7, age, nch, fam, cat}. */
   function predict(fit, p) {
@@ -135,13 +131,13 @@
   }
 
   /** Held-out tests: k-fold by slug hash and leave-one-category-out, each against the naive median. */
-  function holdout(peers, split, o) {
+  function holdout(peers, split, off) {
     var y = [], yh = [], yb = [], cap = [], caph = [], capb = [], slug = [];
     var keys = peers.map(split), names = keys.filter(function (k, i) { return keys.indexOf(k) === i; }).sort();
     names.forEach(function (k) {
       var train = peers.filter(function (p, i) { return keys[i] !== k; }), test = peers.filter(function (p, i) { return keys[i] === k; });
       if (!train.length) return;
-      var fit = fitValue(train, o), base = median(train.map(function (p) { return Math.log(p.mcap / p.tvl); }));
+      var fit = fitValue(train, off), base = median(train.map(function (p) { return Math.log(p.mcap / p.tvl); }));
       test.forEach(function (p) {
         var h = predict(fit, p).y, l = Math.log(p.tvl);
         slug.push(p.slug); y.push(Math.log(p.mcap / p.tvl)); yh.push(h); yb.push(base);
@@ -239,11 +235,21 @@
    */
   function build(input) {
     var peers = input.peers, byFold = function (p) { return foldOf(p.slug); };
-    var grid = A.ridge.map(function (l) { var h = holdout(peers, byFold, { lambda: l, drop: -1 }); return { lambda: l, mdae: h.mdae, h: h }; });
-    var pick = grid.slice().sort(function (a, b) { return a.mdae - b.mdae || b.lambda - a.lambda; })[0], o = { lambda: pick.lambda, drop: -1 };
-    var fit = fitValue(peers, o), kf = pick.h, lo = holdout(peers, function (p) { return p.cat; }, o);
-    var ablate = TERMS.map(function (t, j) { return { term: t, mdae: j ? holdout(peers, byFold, { lambda: o.lambda, drop: j }).mdae : null }; }).slice(1)
-      .concat([{ term: 'category effects', mdae: holdout(peers, byFold, { lambda: o.lambda, drop: -1, nocat: true }).mdae }]);
+    // backward elimination: drop the term (or the category effects) whose removal most lowers the 5-fold
+    // error, and repeat while one does; every term left earned its place on tokens the fit did not see
+    var off = [false, false, false, false, false, false, false], kf = holdout(peers, byFold, off), path = [['all terms', kf.mdae]];
+    for (;;) {
+      var bestJ = -1, bestH = null;
+      for (var j = 1; j <= 6; j++) if (!off[j]) {
+        var o2 = off.slice(); o2[j] = true;
+        var h = holdout(peers, byFold, o2);
+        if (h.mdae < (bestH ? bestH.mdae : kf.mdae)) { bestJ = j; bestH = h; }
+      }
+      if (bestJ < 0) break;
+      off[bestJ] = true; kf = bestH; path.push([PARTS[bestJ], kf.mdae]);
+    }
+    var fit = fitValue(peers, off), lo = holdout(peers, function (p) { return p.cat; }, off);
+    var ablate = PARTS.map(function (t, j) { var o2 = off.slice(); o2[j] = !o2[j]; return { term: t, kept: !off[j], mdae: j ? holdout(peers, byFold, o2).mdae : null }; }).slice(1);
     var band = [quantile(kf.resid, A.band[0]), quantile(kf.resid, A.band[1])], band80 = [quantile(kf.resid, A.band80[0]), quantile(kf.resid, A.band80[1])];
     var cvs = A.lambdas.map(function (l) { return oddsCV(input.pop, l); });
     var best = cvs.slice().sort(function (a, b) { return a.logloss - b.logloss || a.lambda - b.lambda; })[0];
@@ -261,13 +267,13 @@
       return r;
     });
     return {
-      A: A, terms: TERMS, value: fit, ridge: grid.map(function (g) { return [g.lambda, g.mdae]; }), ablate: ablate,
+      A: A, terms: TERMS, value: fit, path: path, ablate: ablate,
       kfold: kf, loco: lo, band: band, band80: band80, odds: ofit, odds_cv: cvs, odds_best: best, rows: rows
     };
   }
 
   globalThis.RadarModel = {
-    A: A, TERMS: TERMS, ageDays: ageDays, build: build, fitValue: fitValue, predict: predict, oddsOf: oddsOf,
+    A: A, TERMS: TERMS, PARTS: PARTS, ageDays: ageDays, build: build, fitValue: fitValue, predict: predict, oddsOf: oddsOf,
     econ: econ, foldOf: foldOf, median: median, quantile: quantile
   };
 })();

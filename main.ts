@@ -15,7 +15,7 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { FAMILIES, GAS, GAS_DEFAULT, MODEL_VERSION, RM, SnapshotError, boardIssue, buildRadar, median, parseSnapshot, recordsToken, stepStrings, verdictLine } from './lib/model.ts';
+import { FAMILIES, GAS, GAS_DEFAULT, MODEL_VERSION, RM, SnapshotError, boardIssue, buildRadar, median, parseSnapshot, peerSkip, recordsToken, stepStrings, tradingOf, verdictLine } from './lib/model.ts';
 import type { Row, Snapshot } from './lib/model.ts';
 import { buildDossier } from './vendor/makefun-board.ts';
 
@@ -141,6 +141,7 @@ const data = {
   peers: radar.peers.map((p) => [p.slug, p.name, p.category, p.symbol, p.tvl_usd, p.mcap_usd, p.change_7d, p.listed_at, p.chains.length]),
   pop: radar.pop.map((p) => [p.slug, p.category, p.tvl_usd, p.change_7d, p.listed_at, p.chains.length, recordsToken(p) ? 1 : 0]),
   excluded: radar.excluded,
+  left_out: tradingOf(snapshot).filter((p) => peerSkip(p) !== null).map((p) => [p.name, p.category, p.symbol, p.tvl_usd, p.mcap_usd, peerSkip(p)]),
   rows: radar.rows.map((r) => ({
     rank: r.rank, slug: r.slug, name: r.name, cat: r.category, fam: r.family, chains: r.chains,
     tvl: r.tvl_usd, c7: r.change_7d, listed: r.listed_at, age: r.age_days, lane: r.lane, rel: r.related_token,

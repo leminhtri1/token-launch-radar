@@ -107,21 +107,23 @@
     var cats = Object.keys(b.cat.groups).map(function (k) { return [k, b.cat.groups[k]]; }).sort(function (x, y) { return Math.abs(y[1].u) - Math.abs(x[1].u); }).slice(0, 4);
     return '<aside class="rail"><div class="panel pad"><h3>Value model · fit on ' + b.n + ' trading tokens</h3>' +
       '<div class="formula">log(mcap/TVL) = β·x + <em>u_fam</em> + <em>u_cat</em><br>implied value = TVL × e<sup>fit</sup></div>' +
-      '<table class="mini coef"><thead><tr><th>term x</th><th class="n">β</th><th class="n">± se</th><th class="n">w/o term</th></tr></thead><tbody>' +
-      M.TERMS.map(function (t, j) {
-        return '<tr><td>' + esc(t) + '</td><td class="n">' + sg(b.beta[j]) + '</td><td class="n">' + b.se[j].toFixed(3) + '</td><td class="n">' + (j ? ab[j - 1].mdae.toFixed(3) : '') + '</td></tr>';
-      }).join('') +
-      '<tr><td>category effects</td><td class="n" colspan="2">τ² ' + b.cat.tau2.toFixed(2) + ' · σ² ' + b.cat.sigma2.toFixed(2) + '</td><td class="n">' + ab[ab.length - 1].mdae.toFixed(3) + '</td></tr></tbody></table>' +
-      '<p><b>w/o term</b> = 5-fold error with that term forced to 0. Ridge on the slopes after ln TVL: λ = ' + b.lambda + ', the 5-fold best of ' + R.ridge.map(function (g) { return g[0]; }).join(' / ') + '. Held out, only TVL’s elasticity survives: a term at β ≈ 0 did not predict peers’ multiples. Empirical-Bayes weight of a category with 1 peer: <b>' + (b.cat.tau2 / (b.cat.tau2 + b.cat.sigma2)).toFixed(2) + '</b>, so one token cannot carry a category. Largest: ' +
+      '<table class="mini coef"><thead><tr><th>term x</th><th class="n">β</th><th class="n">± se</th><th class="n">toggled</th></tr></thead><tbody>' +
+      M.PARTS.map(function (t, j) {
+        var on = !b.off[j], a = j ? ab[j - 1] : null, mid = j === 6 ? '<td class="n" colspan="2">' + (on ? 'τ² ' + b.cat.tau2.toFixed(2) + ' · σ² ' + b.cat.sigma2.toFixed(2) : 'dropped') + '</td>' : on ? '<td class="n">' + sg(b.beta[j]) + '</td><td class="n">' + b.se[j].toFixed(3) + '</td>' : '<td class="n" colspan="2">dropped</td>';
+        return '<tr class="' + (on ? '' : 'off') + '"><td>' + esc(t) + '</td>' + mid + '<td class="n">' + (a ? a.mdae.toFixed(3) : '') + '</td></tr>';
+      }).join('') + '</tbody></table>' +
+      '<p><b>toggled</b> = 5-fold error with that term removed, or added back if dropped. Backward elimination: ' + R.path.map(function (s, i) { return (i ? 'drop ' : '') + esc(s[0]) + ' <b>' + s[1].toFixed(3) + '</b>'; }).join(' → ') + '; a term stays only if dropping it raises held-out error. ' +
+      (b.off[2] && b.off[3] ? '7-day growth and tokenless time did not predict peers’ multiples, so they move the odds and odds × value, not the value. ' : '') +
+      'Empirical-Bayes weight of a category with 1 peer: <b>' + (b.cat.tau2 / (b.cat.tau2 + b.cat.sigma2)).toFixed(2) + '</b>, so one token cannot carry a category. Largest: ' +
       cats.map(function (c) { return esc(c[0]) + ' ' + sg(c[1].u, 2) + ' (n ' + c[1].n + ')'; }).join(', ') + '.</p>' +
       '<table class="mini"><thead><tr><th>held-out</th><th class="n">model</th><th class="n">naive</th><th class="n">ρ</th><th class="n">≤×2</th></tr></thead><tbody>' +
-      [['5-fold by slug hash', kf], ['leave one category out', lc]].map(function (h) {
+      [['5-fold (picked the terms)', kf], ['leave one category out', lc]].map(function (h) {
         return '<tr><td>' + h[0] + '</td><td class="n good">' + h[1].mdae.toFixed(3) + '</td><td class="n">' + h[1].base_mdae.toFixed(3) + '</td><td class="n">' + h[1].rho.toFixed(2) + '</td><td class="n">' + od(h[1].within2) + '</td></tr>';
       }).join('') + '</tbody></table>' +
       '<p>Median absolute error of log(mcap/TVL) on tokens the fit never saw; naive = the training median. Band = 25th–75th percentile of those held-out errors (×' + Math.exp(R.band[0]).toFixed(2) + ' to ×' + Math.exp(R.band[1]).toFixed(2) + ').</p></div>' +
       '<div class="panel pad"><h3>Peer odds · logistic on ' + pop.length + ' protocols</h3><table class="mini"><tbody>' +
       ['intercept', 'ln TVL', 'tanh(7d / 20)', 'ln(1 + years listed)', 'no listing date', 'ln chains'].map(function (t, j) { return '<tr><td>' + t + '</td><td class="n">' + sg(R.odds.b[j]) + '</td></tr>'; }).join('') +
-      '</tbody></table><p>Plus ridge-shrunk family and category terms (λ ' + best.lambda + ' by 5-fold log loss). Out of fold: AUC <b>' + best.auc.toFixed(3) + '</b>, log loss ' + best.logloss.toFixed(3) + ' vs ' + best.base_logloss.toFixed(3) + ' for the base rate. Growing TVL and few years listed mean a token is less common so far.</p></div>' +
+      '</tbody></table><p>Plus ridge-shrunk family and category terms (λ ' + best.lambda + ' by 5-fold log loss). Out of fold: AUC <b>' + best.auc.toFixed(3) + '</b>, log loss ' + best.logloss.toFixed(3) + ' vs ' + best.base_logloss.toFixed(3) + ' for the base rate. ' + (R.odds.b[2] < 0 ? 'Growing' : 'Falling') + ' TVL and ' + (R.odds.b[3] > 0 ? 'fewer' : 'more') + ' years listed make a token less common so far.</p></div>' +
       '<div class="panel pad"><h3>Verdict rule</h3><p>' + vtag('Farm') + ' net ≥ $' + A.farm_hour + '/h, payoff ≥ ' + A.farm_roi + '× cost, odds ≥ ' + od(A.farm_odds) + '<br>' + vtag('Watch') + ' positive but short of one bar<br>' + vtag('Skip') + ' expected payoff below cost</p></div></aside>';
   }
 
@@ -268,7 +270,7 @@
     var r = D.rows.filter(function (q) { return q.slug === slug; })[0];
     if (!r) { app.innerHTML = '<p class="empty">No protocol ' + esc(slug) + ' on this board. <a href="#">Back to the board</a></p>'; return; }
     var m = r.m, t = m.terms, e = m.econ, pl = r.plan, cg = R.value.cat.groups[r.cat || 'Uncategorised'], fg = R.value.fam.groups[r.fam];
-    var vrow = M.TERMS.map(function (name, j) { return '<tr><td>' + esc(name) + '</td><td class="n">' + t.x[j].toFixed(3) + '</td><td class="n">' + sg(R.value.beta[j]) + '</td><td class="n">' + sg(t.parts[j]) + '</td></tr>'; }).join('');
+    var off = R.value.off, vrow = M.TERMS.map(function (name, j) { return '<tr class="' + (off[j] ? 'off' : '') + '"><td>' + esc(name) + '</td><td class="n">' + t.x[j].toFixed(3) + '</td><td class="n">' + (off[j] ? 'dropped' : sg(R.value.beta[j])) + '</td><td class="n">' + sg(t.parts[j]) + '</td></tr>'; }).join('');
     vrow += '<tr><td>family: ' + esc(r.fam) + '<span class="why">' + (fg ? fg.n + ' peers, EB weight ' + fg.w.toFixed(2) : 'no trading peer') + '</span></td><td></td><td></td><td class="n">' + sg(t.fam) + '</td></tr>';
     vrow += '<tr><td>category: ' + esc(r.cat || 'Uncategorised') + '<span class="why">' + (cg ? cg.n + ' peer' + (cg.n > 1 ? 's' : '') + ', mean residual ' + sg(cg.mean, 2) + ' × EB weight ' + cg.w.toFixed(2) : 'no trading peer: stays on the global fit') + '</span></td><td></td><td></td><td class="n">' + sg(t.cat) + '</td></tr>';
     var lr = r.lane === 'related' ? A.related : 1;
@@ -284,12 +286,12 @@
     app.innerHTML = '<a class="back" href="#">← Back to the board</a>' +
       '<section class="panel"><div class="dhead"><div><h1>' + esc(r.name) + tag(r.lane) + '</h1>' +
       '<div class="facts">Rank <b>#' + r.rank + '</b> of ' + N + ' · ' + esc(r.cat || 'Uncategorised') + ' · TVL <b>' + usd(r.tvl) + '</b> ' + pct(r.c7) + ' 7d · listed ' + esc(r.listed || 'n/a') + ' (' + age(r.age) + ' with no token recorded) · ' + esc(r.chains.slice(0, 5).join(', ')) + (r.chains.length > 5 ? ' +' + (r.chains.length - 5) : '') + '</div></div>' +
-      '<div class="stats"><div class="big"><b>' + usd(r.v) + '</b><span>implied · 50% ' + usd(r.lo) + '–' + usd(r.hi) + ' · 80% ' + usd(r.v * Math.exp(R.band80[0])) + '–' + usd(r.v * Math.exp(R.band80[1])) + '</span></div>' +
+      '<div class="stats"><div class="big"><b>' + usd(r.v) + '</b><span>implied value · 50% band ' + usd(r.lo) + '–' + usd(r.hi) + '</span></div>' +
       '<div><b>' + od(r.odds) + '</b><span>peer odds</span></div><div><b>' + usd(r.ev) + '</b><span>odds × value</span></div><div>' + vtag(r.vd) + '<span>' + esc(e.why) + '</span></div></div></div>' +
       (r.rel ? '<p class="note-rel">Related token: ' + esc(r.rel) + '. It stays on the board at ×' + A.related + ' and is flagged.</p>' : '') + '</section>' +
-      '<div class="dgrid"><section class="panel pad"><h3>Implied value, term by term</h3><table class="mini terms"><thead><tr><th>term</th><th class="n">x</th><th class="n">β</th><th class="n">β·x</th></tr></thead><tbody>' + vrow +
+      '<div class="dgrid"><section class="panel pad"><h3>Implied value, term by term</h3><table class="mini coef"><thead><tr><th>term</th><th class="n">x</th><th class="n">β</th><th class="n">β·x</th></tr></thead><tbody>' + vrow +
       '<tr class="total"><td>log multiple → ×' + Math.exp(t.y).toFixed(4) + (lr < 1 ? ' × ' + lr + ' related' : '') + ' × TVL ' + usd(r.tvl) + '</td><td></td><td></td><td class="n">' + sg(t.y) + '</td></tr>' +
-      '<tr class="total"><td>Implied value</td><td></td><td></td><td class="n">' + usd(m.v) + '</td></tr></tbody></table>' +
+      '<tr class="total"><td>Implied value<span class="why">bands from held-out errors: 50% ' + usd(r.lo) + '–' + usd(r.hi) + ' · 80% ' + usd(r.v * Math.exp(R.band80[0])) + '–' + usd(r.v * Math.exp(R.band80[1])) + '</span></td><td></td><td></td><td class="n">' + usd(m.v) + '</td></tr></tbody></table>' +
       '<p class="check">' + (m.v === r.v ? '<span class="good">✓</span> Refit in this page: $' + m.v.toLocaleString('en-US') + ', equal to board.json.' : '✗ Page computes $' + m.v + ', board.json says $' + r.v + '.') + '</p>' +
       '<h3 class="gap">Peer odds, term by term</h3><table class="mini"><tbody>' +
       ['intercept', 'ln TVL / $100M', 'tanh(7d / 20)', 'ln(1 + years listed)', 'no listing date', 'ln chains'].map(function (n, j) { return '<tr><td>' + n + '</td><td class="n">' + sg(od6[j]) + '</td></tr>'; }).join('') +
