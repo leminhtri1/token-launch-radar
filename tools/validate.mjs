@@ -4,8 +4,9 @@
 //
 // Runs main.ts twice (into <out>-a and <out>-b), requires byte-identical outputs, then checks the
 // seven gate rows on <out>-a plus this entry's own stricter targets (dashboard source under 60 KB, the
-// page's refit replayed in Node and equal to board.json, held-out scores beating their baselines,
-// 4-8 farm steps, screenshots under 350 KB). Exits 1 on any failure.
+// page's refit replayed in Node and equal to board.json, held-out scores beating their baselines, every
+// value term (size, reach, family, category, momentum, track) moving some row and none called dropped,
+// dollar steps that land on the implied value, 4-8 farm steps, screenshots under 350 KB). Exits 1 on any failure.
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, lstatSync, readFileSync, readdirSync, rmSync, mkdirSync } from 'node:fs';
@@ -166,6 +167,19 @@ let rows = [];
   check('target: odds beat the base rate held-out', R.odds_best.logloss < R.odds_best.base_logloss && R.odds_best.auc > 0.5, `AUC ${R.odds_best.auc}, log loss ${R.odds_best.logloss} vs ${R.odds_best.base_logloss}`);
   const noVerdict = rows.filter((r) => !['Farm', 'Watch', 'Skip'].includes(r.verdict) || !r.farm_steps.some((t) => t.startsWith(`Verdict: ${r.verdict}`)) || !(r.farm.total_cost_usd > 0) || !(r.farm.hands_on_hours > 0));
   check('target: every row has a costed verdict', noVerdict.length === 0, noVerdict.length ? `${noVerdict[0].slug}` : `${rows.length} rows with cost, hours and verdict`);
+  // every value term moves some row's value, and nothing on the page or the board calls a term dropped
+  const NAMES = ['base multiple', 'size', 'reach', 'family', 'category', 'momentum(7d)', 'track(days with no token)'];
+  const moved = NAMES.map((n, k) => R.rows.filter((r) => Math.abs(r.factors[k] - 1) >= 0.01).length);
+  const still = NAMES.filter((n, k) => moved[k] === 0);
+  const dash = readdirSync(join(out, 'dashboard')).map((f) => readFileSync(join(out, 'dashboard', f), 'utf8')).join('\n');
+  const dropped = /\bdropped\b/i.test(dash) || /\bdropped\b/i.test(boardText.toString('utf8'));
+  check('target: every value term non-neutral, none dropped', still.length === 0 && !dropped && R.value.beta.every((b) => Math.abs(b) > 0.01),
+    still.length ? `neutral on every row: ${still.join(', ')}` : dropped ? 'the word "dropped" appears' : NAMES.map((n, k) => `${n.split('(')[0]} ${moved[k]}`).join(', '));
+  const walk = rows.filter((r) => !Array.isArray(r.value_steps) || r.value_steps.length !== 8 || r.value_steps[7].usd !== r.implied_value_usd);
+  check('target: value_steps walk TVL to the implied value', walk.length === 0, walk.length ? `${walk[0].slug}` : `${rows.length} rows, 8 steps each, last = implied_value_usd`);
+  const v2 = R.cmp.find((c) => c.mode === 'v2');
+  check('target: v3 held-out well under naive, cost vs v2 shown', kf.mdae < 0.8 * kf.base_mdae && lc.mdae < 0.8 * lc.base_mdae,
+    `5-fold v3 ${kf.mdae} / v2 ${v2.kf} / naive ${kf.base_mdae}; by category v3 ${lc.mdae} / v2 ${v2.lo} / naive ${lc.base_mdae}`);
   const src = ['app.js', 'model.js'].map((f) => readFileSync(join(out, 'dashboard', f), 'utf8')).join('\n');
   const named = rows.filter((r) => r.name.length > 4 && src.includes(r.name));
   check('target: no protocol named in the page code', named.length === 0, named.length ? named.slice(0, 3).map((r) => r.name).join(', ') : 'none');

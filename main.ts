@@ -53,6 +53,11 @@ const fit = radar.fit;
 
 // ---------------------------------------------------------------- board.json
 
+/** TVL to implied value in dollar steps, one factor a step: {factor, multiplier, value after it}. */
+const FACTOR_NAMES = ['base multiple', 'size (ln TVL)', 'reach (ln chains)', 'family effect', 'category effect', 'momentum (7d)', 'track (days with no token)', 'related-token haircut'];
+function valueSteps(r: Row) {
+  return FACTOR_NAMES.map((factor, i) => ({ factor, x: r.factors[i], usd: r.steps[i] }));
+}
 const boardRow = (r: Row) => ({
   rank: r.rank,
   slug: r.slug,
@@ -72,6 +77,7 @@ const boardRow = (r: Row) => ({
   listed_at: r.listed_at,
   tokenless_days: r.age_days,
   log_multiple: r.log_multiple,
+  value_steps: valueSteps(r),
   peer_token_odds: r.odds,
   expected_value_usd: r.expected_value_usd,
   verdict: r.econ.verdict,
@@ -111,7 +117,7 @@ const summary = {
 const modelNote = {
   version: MODEL_VERSION,
   code: 'dashboard/model.js (the page runs the same file and checks every value against this board)',
-  value: 'implied = TVL x exp(beta.x + family effect + category effect), fitted on the snapshot protocols whose token trades; x = [1, ln(TVL/$100M), tanh(change_7d/20), ln(1 + years listed), no listing date, ln chains]',
+  value: 'implied value = TVL x fitted multiple x momentum(7d) x track(days with no token); multiple = exp(a + b ln(TVL/$100M) + c ln chains + family + category), fitted on the snapshot protocols whose token trades; momentum = exp(g tanh((change_7d - median)/20)); track = exp(d (1 - e^(-days/365))); g and d fitted in the same regression under normal priors (g0 = 4 weeks of the growth at the fitted TVL elasticity, d0 = log of the odds lift of a 3-year record), sd = half the prior mean',
   odds: 'peer_token_odds = logistic fit, on every non-CEX snapshot protocol, of whether it records a token',
   verdict: 'cost = gas and fees + capital x 5%/yr over the window; payoff = odds x 10% community share of implied value x (half flat over TVL/$25k farmers, half pro rata)',
   assumptions: { ...RM.A, gas_usd_per_tx_and_funding: GAS },
@@ -145,7 +151,7 @@ const data = {
   rows: radar.rows.map((r) => ({
     rank: r.rank, slug: r.slug, name: r.name, cat: r.category, fam: r.family, chains: r.chains,
     tvl: r.tvl_usd, c7: r.change_7d, listed: r.listed_at, age: r.age_days, lane: r.lane, rel: r.related_token,
-    v: r.implied_value_usd, lo: r.implied_low_usd, hi: r.implied_high_usd, y: r.log_multiple, odds: r.odds, ev: r.expected_value_usd,
+    v: r.implied_value_usd, lo: r.implied_low_usd, hi: r.implied_high_usd, y: r.log_multiple, f: r.factors, odds: r.odds, ev: r.expected_value_usd,
     econ: { ...r.econ, weight: undefined }, plan: r.plan,
   })),
 };

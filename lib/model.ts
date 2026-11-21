@@ -3,9 +3,9 @@
 // One sealed snapshot in, one ranked board out. The fitting itself lives in dashboard/model.js, a plain
 // script that this file imports and that the page runs again in the browser, so the board and the page
 // share one implementation:
-//   1. Value. log(mcap/TVL) of the snapshot's protocols whose token trades (CEXes left out) is regressed
-//      on ln TVL, tanh(change_7d/20), ln(1 + years listed), a no-date flag and ln chains, with family and
-//      category effects shrunk by empirical-Bayes weights; terms kept by backward elimination on 5-fold error.
+//   1. Value. implied value = TVL x fitted multiple x momentum(7d) x track(days with no token). The
+//      multiple is fitted on the snapshot's trading tokens (ln TVL, ln chains, empirical-Bayes family and
+//      category effects); momentum and track are fitted in the same regression under stated priors.
 //   2. Odds. A penalised logistic on every non-CEX protocol: how often one like this records a token.
 //   3. Plan. Each row gets a farm plan from its category, its cheapest sensible chain (the GAS table
 //      below, an assumption in US dollars per transaction), its TVL (capital) and its age (window).
@@ -38,7 +38,7 @@ export interface Snapshot {
   watchlist: string[];
 }
 
-export const MODEL_VERSION = 'radar-fit-4';
+export const MODEL_VERSION = 'radar-fit-5';
 
 /** Categories grouped into families: the value fit shrinks a category toward its family, then the global fit. */
 export const FAMILIES: Record<string, string[]> = {
@@ -450,6 +450,10 @@ export interface Row {
   implied_low_usd: number;
   implied_high_usd: number;
   log_multiple: number;
+  /** [base, size, reach, family, category, momentum, track, related] multipliers, applied to TVL in turn. */
+  factors: number[];
+  /** Dollar value after each factor; the last equals implied_value_usd. */
+  steps: number[];
   odds: number;
   expected_value_usd: number;
   econ: Econ;
@@ -474,25 +478,28 @@ export interface Radar {
   excluded: Universe['excluded'];
 }
 
-/** What the page prints and checks: fitted terms, shrinkage, held-out scores, odds fit. */
+/** What the page prints and checks: fitted terms, priors, shrinkage, held-out scores, odds fit. */
 function summary(R: any) {
-  const hold = (h: any) => ({ n: h.n, folds: h.folds, mdae: h.mdae, base_mdae: h.base_mdae, rho: h.rho, within2: h.within2, base_within2: h.base_within2 });
+  const hold = (h: any) => ({ n: h.n, folds: h.folds, mdae: h.mdae, base_mdae: h.base_mdae });
   const groups = (E: any) => Object.fromEntries(Object.entries(E.groups).map(([k, g]: [string, any]) => [k, [g.n, r4(g.mean), r4(g.w), r4(g.u)]]));
   return {
     terms: R.terms,
     beta: R.value.beta.map(r4),
     se: R.value.se.map(r4),
-    kept: R.value.off.map((o: boolean) => !o),
-    path: R.path,
-    ablate: R.ablate,
+    data_beta: R.flat.beta.map(r4),
+    data_se: R.flat.se.map(r4),
+    prior: R.value.prior.map((p: number[]) => p.map(r4)),
+    elasticity: r4(R.value.e),
+    median_7d: r4(R.ctx.med),
+    track_odds: { at_0: r4(R.track.p0), at_3y: r4(R.track.p3) },
     tau2: { family: r4(R.value.fam.tau2), category: r4(R.value.cat.tau2) },
     sigma2: r4(R.value.cat.sigma2),
     families: groups(R.value.fam),
     categories: groups(R.value.cat),
     kfold: hold(R.kfold),
     loco: hold(R.loco),
+    compare: R.cmp,
     band: R.band.map(r4),
-    band80: R.band80.map(r4),
     odds: { lambda: R.odds.lambda, b: R.odds.b.map(r4), fams: R.odds.d.fams, cats: R.odds.d.cats, cv: R.odds_cv },
     holdout: R.kfold.slug.map((s: string, i: number) => [s, r4(R.kfold.pred[i])]),
   };
@@ -529,6 +536,8 @@ export function buildRadar(s: Snapshot): Radar {
     implied_low_usd: x.m.lo,
     implied_high_usd: x.m.hi,
     log_multiple: r4(x.m.y),
+    factors: x.m.factors.map(r4),
+    steps: x.m.steps.map((v: number, k: number) => (k === 7 ? x.m.v : Math.round(v))),
     odds: x.m.odds,
     expected_value_usd: x.m.ev,
     econ: x.m.econ,
