@@ -3,13 +3,15 @@
 //   node tools/validate.mjs --input <snapshot.json> [--out out]
 //
 // Runs main.ts twice (into <out>-a and <out>-b), requires byte-identical outputs, then checks the
-// seven gate rows on <out>-a plus this entry's own stricter targets (dashboard source under 60 KB,
+// seven gate rows on <out>-a plus this entry's own stricter targets (dashboard source under 60 KB, the
+// page's refit replayed in Node and equal to board.json, held-out scores beating their baselines,
 // 4-8 farm steps, screenshots under 350 KB). Exits 1 on any failure.
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, lstatSync, readFileSync, readdirSync, rmSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import vm from 'node:vm';
 import { buildDossier } from '../vendor/makefun-board.ts';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -130,6 +132,43 @@ let rows = [];
   check('target: 4-8 farm steps', minS >= 4 && maxS <= 8, `${minS}-${maxS}`);
   const says = rows.flatMap((r) => r.farm_steps).filter((t) => /\bhas no token\b|\bhas none\b/i.test(t));
   check('target: says "records no token", never "has none"', says.length === 0, says[0] ?? 'ok');
+}
+
+// ------------------------------------------------------------ the page's own refit, replayed in Node
+// Loads data.js and dashboard/model.js in a sandbox exactly as index.html does, rebuilds the model inputs
+// the way app.js does, and requires the refit to equal board.json row for row.
+{
+  const ctx = { window: {}, Date, Math, isFinite };
+  ctx.globalThis = ctx;
+  vm.createContext(ctx);
+  vm.runInContext(readFileSync(join(out, 'data.js'), 'utf8'), ctx);
+  vm.runInContext(readFileSync(join(out, 'dashboard', 'model.js'), 'utf8'), ctx);
+  const D = ctx.window.RADAR;
+  const M = ctx.RadarModel;
+  const fam = {};
+  for (const [f, cats] of Object.entries(D.families)) for (const c of cats) fam[c] = f;
+  const inp = (slug, cat, tvl, c7, listed, nch) => ({ slug, cat: cat || 'Uncategorised', fam: (cat && fam[cat]) || 'Other', tvl, c7, age: M.ageDays(D.as_of, listed), nch });
+  const R = M.build({
+    peers: D.peers.map((p) => ({ ...inp(p[0], p[2], p[4], p[6], p[7], p[8]), mcap: p[5] })),
+    pop: D.pop.map((p) => ({ ...inp(p[0], p[1], p[2], p[3], p[4], p[5]), tok: p[6] })),
+    rows: D.rows.map((r) => ({ ...inp(r.slug, r.cat, r.tvl, r.c7, r.listed, r.chains.length), lane: r.lane, plan: r.plan })),
+  });
+  const byslug = new Map(rows.map((r) => [r.slug, r]));
+  const bad = D.rows.filter((r, i) => {
+    const m = R.rows[i];
+    const b = byslug.get(r.slug);
+    return !b || m.v !== b.implied_value_usd || m.lo !== b.implied_low_usd || m.hi !== b.implied_high_usd || m.odds !== b.peer_token_odds || m.ev !== b.expected_value_usd || m.econ.verdict !== b.verdict;
+  });
+  check('target: page refit equals board.json', bad.length === 0, bad.length ? `${bad.length} rows differ, first ${bad[0].slug}` : `${D.rows.length}/${D.rows.length} rows (value, band, odds, EV, verdict)`);
+  const kf = R.kfold;
+  const lc = R.loco;
+  check('target: value fit beats naive held-out twice', kf.mdae < kf.base_mdae && lc.mdae < lc.base_mdae, `5-fold ${kf.mdae} vs ${kf.base_mdae}; by category ${lc.mdae} vs ${lc.base_mdae}`);
+  check('target: odds beat the base rate held-out', R.odds_best.logloss < R.odds_best.base_logloss && R.odds_best.auc > 0.5, `AUC ${R.odds_best.auc}, log loss ${R.odds_best.logloss} vs ${R.odds_best.base_logloss}`);
+  const noVerdict = rows.filter((r) => !['Farm', 'Watch', 'Skip'].includes(r.verdict) || !r.farm_steps.some((t) => t.startsWith(`Verdict: ${r.verdict}`)) || !(r.farm.total_cost_usd > 0) || !(r.farm.hands_on_hours > 0));
+  check('target: every row has a costed verdict', noVerdict.length === 0, noVerdict.length ? `${noVerdict[0].slug}` : `${rows.length} rows with cost, hours and verdict`);
+  const src = ['app.js', 'model.js'].map((f) => readFileSync(join(out, 'dashboard', f), 'utf8')).join('\n');
+  const named = rows.filter((r) => r.name.length > 4 && src.includes(r.name));
+  check('target: no protocol named in the page code', named.length === 0, named.length ? named.slice(0, 3).map((r) => r.name).join(', ') : 'none');
 }
 
 // ------------------------------------------------------------ screenshots

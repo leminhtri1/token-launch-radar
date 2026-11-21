@@ -10,14 +10,15 @@
 <header class="top">
   <a class="brand" href="#" aria-label="Back to the board">
     <svg viewBox="0 0 40 40" width="30" height="30" aria-hidden="true"><circle cx="20" cy="20" r="18" class="ring"/><circle cx="20" cy="20" r="11" class="ring"/><circle cx="20" cy="20" r="4" class="ring"/><path d="M20 20 L20 2 A18 18 0 0 1 35.6 11 Z" class="sweep"/><circle cx="29" cy="12" r="2.2" class="blip"/></svg>
-    <span><b>Token Launch Radar</b><small>protocols that record no token, ranked by what one would be worth</small></span>
+    <span><b>Token Launch Radar</b><small>pre-token protocols ranked by a value fitted on the tokens that trade</small></span>
   </a>
   <div class="meta" id="meta"></div>
 </header>
-<section class="kpis" id="kpis" aria-label="Key figures"></section>
+<section class="checks" id="checks" aria-label="Integrity checks, computed in this page"></section>
 <main id="app" aria-live="polite"></main>
 <footer class="foot" id="foot"></footer>
 <script src="../data.js"></script>
+<script src="model.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
