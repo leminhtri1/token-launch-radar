@@ -85,7 +85,7 @@
     if (n === null || n === undefined) return 'n/a';
     var a = Math.abs(n);
     if (a >= 1e9) return '$' + (n / 1e9).toFixed(2) + 'B';
-    if (a >= 1e6) return '$' + (n / 1e6).toFixed(a >= 1e8 ? 0 : 1) + 'M';
+    if (a >= 1e6) return '$' + (n / 1e6).toFixed(a >= 1e8 ? 0 : 1).replace(/\.0$/, '') + 'M';
     if (a >= 1e3) return '$' + (n / 1e3).toFixed(0) + 'K';
     return '$' + (a >= 10 ? n.toFixed(0) : n.toFixed(2));
   }
@@ -142,6 +142,7 @@
       '<div class="panel pad"><h3>How implied value is set</h3>' +
       '<div class="formula">TVL × <em>multiple</em><br>× momentum(7d) × track(tokenless days)<br>× breadth(chains) × confidence(TVL)<br>× 0.25 if a related token trades</div>' +
       '<p><b>Multiple</b> = median market cap / TVL of the snapshot’s ' + D.peers.length + ' protocols whose token trades, per category, shrunk toward its family and the global median by sample size (K = ' + K.shrink + '). No name is hard-coded.</p>' +
+      '<div class="legend">' + tag('watchlist') + '<span>house list: TVL ≥ ' + usd(D.floor_usd) + '</span>' + tag('early') + '<span>off the list, no token</span>' + tag('related') + '<span>same-name token, ×' + K.related_haircut + '</span></div>' +
       '<p class="check"><span class="ok">✓</span> This page re-ran the calibration: ' + CAT_OK + '/' + catList.length + ' category multiples and ' + MATCH + '/' + D.rows.length + ' implied values equal board.json.</p></div>' +
       '<div class="panel pad"><h3>Multiples used most</h3><table class="mini"><tbody>' +
       top.map(function (c) { var m = CAL.categories[c]; return '<tr><td>' + esc(c) + ' <span class="sub">' + m.n + ' trading peers · ' + esc(m.family) + '</span></td><td class="n mono">' + x(m.multiple) + '</td></tr>'; }).join('') +
@@ -290,10 +291,10 @@
     line('Chain breadth', f.breadth, r.chains.length + ' chain' + (r.chains.length > 1 ? 's' : '') + ' → 0.97 + 0.055·ln(' + r.chains.length + '), cap 1.15');
     line('Size confidence', f.confidence, 'TVL ' + usd(r.tvl) + ' → 0.85 at $5M rising to 1.00 at $1B');
     if (r.lane === 'related') line('Related token haircut', f.related, 'a related token already trades, so most value may accrue to it');
-    var peers = D.peers.filter(function (p) { return (p[1] || 'Uncategorised') === (r.cat || 'Uncategorised'); });
-    if (!peers.length) peers = D.peers.filter(function (p) { return familyOf(p[1]) === c.family; });
-    peers = peers.sort(function (a, b) { return b[4] - a[4]; }).slice(0, 4);
-    var lo = Math.log(r.lo), hi = Math.log(r.hi), span = Math.log(r.hi * 1.6) - Math.log(r.lo / 1.6);
+    function byMcap(a, b) { return b[4] - a[4]; }
+    var peers = D.peers.filter(function (p) { return (p[1] || 'Uncategorised') === (r.cat || 'Uncategorised'); }).sort(byMcap).slice(0, 3);
+    D.peers.filter(function (p) { return familyOf(p[1]) === c.family && peers.indexOf(p) < 0; }).sort(byMcap).forEach(function (p) { if (peers.length < 3) peers.push(p); });
+    var span = Math.log(r.hi * 1.6) - Math.log(r.lo / 1.6);
     function pos(v) { return ((Math.log(v) - Math.log(r.lo / 1.6)) / span * 100).toFixed(1) + '%'; }
     var p = r.plan;
     app.innerHTML = '<a class="back" href="#">← Back to the board</a>' +
@@ -307,15 +308,17 @@
       '<div class="bandviz"><div class="axis"></div><div class="rng" style="left:' + pos(r.lo) + ';width:calc(' + pos(r.hi) + ' - ' + pos(r.lo) + ')"></div><div class="pt" style="left:' + pos(r.v) + '"></div></div>' +
       '<div class="bandlbl"><span>low ' + usd(r.lo) + '</span><span>band ±' + band[2].toFixed(2) + ' log (standard error of the ' + esc(r.cat || '') + ' multiple)</span><span>high ' + usd(r.hi) + '</span></div>' +
       '<p class="check">' + (r.calc === r.v ? '<span class="ok">✓</span> Recomputed in this page from the raw figures: ' + dollars(r.calc) + ', equal to board.json.' : '✗ Page computes ' + dollars(r.calc) + ', board.json says ' + dollars(r.v) + '.') + '</p>' +
-      '<h3 style="margin-top:16px">Tokens that trade in its category</h3><table class="mini"><tbody>' +
-      peers.map(function (q) { return '<tr><td>' + esc(q[0]) + ' <span class="tag trading">' + esc(q[2] || '') + '</span></td><td class="n mono">' + usd(q[4]) + ' mcap</td><td class="n mono">' + x(q[4] / q[3]) + '</td></tr>'; }).join('') +
+      '<h3 style="margin-top:16px">Comparable tokens that trade</h3><table class="mini"><tbody>' +
+      peers.map(function (q) { return '<tr><td>' + esc(q[0]) + ' <span class="tag trading">' + esc(q[2] || '') + '</span> <span class="sub">' + esc(q[1] || '') + ' · TVL ' + usd(q[3]) + '</span></td><td class="n mono">' + usd(q[4]) + ' mcap</td><td class="n mono">' + x(q[4] / q[3]) + '</td></tr>'; }).join('') +
       '</tbody></table></section>' +
-      '<section class="panel"><div class="pad" style="padding-bottom:0"><h3>Farm plan · ' + esc(p.chain) + ' · gas ≈ ' + dollars(p.gas_per_tx) + ' per transaction</h3></div>' +
+      '<section class="panel"><div class="pad" style="padding-bottom:0"><h3>Farm plan · ' + esc(p.chain) + ' · ' + p.txs + ' transactions at ≈ ' + dollars(p.gas_per_tx) + '</h3>' +
+      '<p class="perchain">Same plan, gas + fees by chain: ' + p.per_chain.map(function (q) { return '<span' + (q.chain === p.chain ? ' class="on"' : '') + '>' + esc(q.chain) + ' <b>' + dollars(q.total) + '</b></span>'; }).join('') + '</p></div>' +
+      '<div class="totals"><div><span>Capital at work</span><b>' + dollars(p.capital) + '</b></div><div><span>Gas + fees, all in</span><b>' + dollars(p.fees_total) + '</b></div><div><span>Hands-on time</span><b>' + mins(p.hands_on_minutes) + '</b></div><div><span>Window</span><b>' + p.weeks + ' weeks</b></div></div>'+
       '<table class="steps"><thead><tr><th></th><th>Step</th><th class="n">Capital</th><th class="n">Gas / fees</th><th class="n">Time</th></tr></thead><tbody>' +
       p.steps.map(function (s, i) {
         return '<tr><td>' + (i + 1) + '</td><td><span class="lbl">' + esc(s.step) + '</span>' + esc(s.action) + '</td><td class="n">' + (s.capital ? dollars(s.capital) : '–') + '</td><td class="n">' + (s.fees ? dollars(s.fees) : '–') + '</td><td class="n">' + mins(s.minutes) + '<span class="sub">' + esc(s.span) + '</span></td></tr>';
       }).join('') + '</tbody></table>' +
-      '<div class="totals"><div><span>Capital at work</span><b>' + dollars(p.capital) + '</b></div><div><span>Gas + fees, all in</span><b>' + dollars(p.fees_total) + '</b></div><div><span>Hands-on time</span><b>' + mins(p.hands_on_minutes) + '</b></div><div><span>Window</span><b>' + p.weeks + ' weeks</b></div></div></section></div>';
+      '</section></div>';
     window.scrollTo(0, 0);
   }
 

@@ -93,6 +93,17 @@ export const GAS: Record<string, [number, number]> = {
   Algorand: [0.002, 0.5], Stellar: [0.001, 0.5], Ripple: [0.001, 0.5], Flare: [0.01, 1.5], TON: [0.03, 0.5],
   Starknet: [0.03, 1.5], Bittensor: [0.01, 1], Noble: [0.01, 0.5], Sei: [0.01, 1], Celo: [0.01, 1],
   'World Chain': [0.02, 1], Fantom: [0.02, 1], xDai: [0.01, 1], Mezo: [0.02, 2], BSquared: [0.05, 2],
+  Arc: [0.01, 1], 'Robinhood Chain': [0.02, 1], Provenance: [0.05, 2], Morph: [0.02, 1], RISE: [0.01, 1.5],
+  'Plume Mainnet': [0.02, 1], Tempo: [0.01, 1], Pharos: [0.02, 1.5], Stable: [0.01, 1], Fluent: [0.02, 1.5],
+  RSK: [0.1, 2], 'X Layer': [0.02, 0.5], Manta: [0.02, 1], Ronin: [0.02, 1], Kava: [0.01, 1], Stacks: [0.3, 2],
+  Klaytn: [0.02, 0.5], Hemi: [0.05, 1.5], TAC: [0.02, 1.5], BOB: [0.02, 1], CORE: [0.02, 1], Citrea: [0.05, 2],
+  Etherlink: [0.01, 1], Blast: [0.02, 1], Sophon: [0.02, 1], Soneium: [0.02, 1], Mode: [0.02, 1], Near: [0.01, 0.5],
+};
+
+/** What to withdraw from an exchange to fund a chain whose DeFi does not start from USDC. */
+export const FUND_ASSET: Record<string, string> = {
+  Bitcoin: 'BTC', BSquared: 'BTC', Mezo: 'BTC', CORE: 'BTC', Stacks: 'STX', RSK: 'BTC', Bittensor: 'TAO', Cardano: 'ADA',
+  Ripple: 'XRP', Tron: 'USDT', TON: 'USDT', Flare: 'XRP (as FXRP) or USDT0', Algorand: 'USDC or ALGO', Kava: 'USDT',
 };
 const GAS_DEFAULT: [number, number] = [0.1, 2];
 
@@ -280,6 +291,8 @@ export interface PlanStep {
   capital: number;
   /** Gas and fees this step burns, USD. */
   fees: number;
+  /** On-chain transactions this step sends. */
+  txs: number;
   /** Hands-on minutes. */
   minutes: number;
   /** Elapsed span, as words. */
@@ -293,6 +306,9 @@ export interface Plan {
   fees_total: number;
   hands_on_minutes: number;
   weeks: number;
+  txs: number;
+  /** The same plan's gas and fees on each of the protocol's chains with a known gas cost. */
+  per_chain: { chain: string; gas: number; total: number }[];
   steps: PlanStep[];
 }
 
@@ -315,6 +331,7 @@ export function chainFor(p: SnapshotProtocol): { chain: string; gas: number; fun
 }
 
 /** Category-specific action: [what you do, how many transactions it takes, what you track]. */
+const WEEKLY_TRADING_FEE: Record<string, number> = { Derivatives: 1, Options: 1, 'Options Vault': 0.5, 'Interest Rate Derivatives': 1, Dexs: 0.05, 'Prediction Market': 0.5 };
 function actionFor(p: SnapshotProtocol, chain: string, capital: number): [string, number, string] {
   const n = p.name;
   const c = p.category ?? '';
@@ -351,7 +368,7 @@ function actionFor(p: SnapshotProtocol, chain: string, capital: number): [string
     case 'Staking Pool':
       return [`Deposit ${cap} of a liquid-staked asset (or the chain's native coin) into ${n}'s default vault or pool on ${chain}; note the withdrawal delay before you commit (often 7-21 days)`, 2, 'vault TVL, operator/network set and the unbonding period'];
     case 'Chain':
-      return [`Bridge ${cap} to ${n} through its official bridge and use three of its native apps each week (a swap, a lend and a liquidity deposit) so the address shows steady activity`, 6, 'weekly active days, bridged balance and the chain\'s own points page'];
+      return [`Bridge ${cap} to ${chain} through the official bridge and use ${n} plus two other native apps each week (a swap, a lend and a liquidity deposit) so the address shows steady on-chain activity`, 6, 'weekly active days, bridged balance and the chain\'s own points page'];
     case 'Payments':
       return [`Open a ${cap} channel on ${n} from a self-custodial wallet (one on-chain open), then route 5-10 small payments a week through it`, 2, 'channel balance, routing fees and on-chain fee level before closing'];
     case 'CeDeFi':
@@ -391,70 +408,69 @@ export function buildPlan(p: SnapshotProtocol, age: number | null, lane: Lane): 
   const capital = capitalFor(p, gas);
   const weeks = weeksFor(age);
   const [action, txs, track] = actionFor(p, chain, capital);
-  const weeklyTx = 2;
+  const weeklyFee = WEEKLY_TRADING_FEE[p.category ?? ''] ?? 0;
   const mom = p.change_7d;
   const steps: PlanStep[] = [];
   steps.push({
     step: 'Fund',
-    action: `Use a fresh wallet that holds only this farm. Withdraw ${money(capital)} USDC from an exchange straight to ${chain}${alt !== null ? ` (cheaper than ${alt}, where one transaction costs about ${money((GAS[alt] ?? GAS_DEFAULT)[0])})` : ''} and keep ${money(Math.max(2, gas * 20))} of the gas coin for fees.`,
-    capital: 0,
-    fees: r2(fund + gas),
-    minutes: 15,
-    span: 'day 0',
+    action: `Use a fresh wallet that holds only this farm. Withdraw ${money(capital)} of ${FUND_ASSET[chain] ?? 'USDC'} from an exchange straight to ${chain}${alt !== null ? ` (one transaction on ${alt} costs about ${money((GAS[alt] ?? GAS_DEFAULT)[0])})` : ''} and keep ${money(Math.max(2, gas * 20))} of its gas coin for fees.`,
+    capital: 0, fees: r2(fund + gas), txs: 1, minutes: 15, span: 'day 0',
   });
-  steps.push({ step: 'Enter', action: `${action}.`, capital, fees: r2(txs * gas), minutes: 10 + txs * 5, span: 'day 0' });
+  steps.push({ step: 'Enter', action: `${action}.`, capital, fees: r2(txs * gas), txs, minutes: 10 + txs * 5, span: 'day 0' });
   steps.push({
     step: 'Repeat',
-    action: `Once a week, claim or compound and make one extra interaction (top-up, rebalance or a swap) so the address is active in every weekly snapshot for ${weeks} weeks: ${weeks * weeklyTx} transactions in all.`,
-    capital: 0,
-    fees: r2(weeks * weeklyTx * gas),
-    minutes: weeks * 10,
-    span: `${weeks} weeks`,
+    action: `Once a week, claim or compound and make one extra interaction (top-up, rebalance or a swap) so the address is active in every weekly snapshot for ${weeks} weeks: ${weeks * 2} transactions in all${weeklyFee > 0 ? `, plus about ${money(weeklyFee)} a week in trading fees` : ''}.`,
+    capital: 0, fees: r2(weeks * (2 * gas + weeklyFee)), txs: weeks * 2, minutes: weeks * 10, span: `${weeks} weeks`,
   });
   if (p.chains.length >= 3) {
     const second = p.chains.find((c) => c !== chain && GAS[c] !== undefined && GAS[c][0] < 0.2);
     if (second !== undefined) {
+      const [g2, f2] = GAS[second]!;
       steps.push({
         step: 'Spread',
-        action: `${p.name} runs on ${p.chains.length} chains: in week 3 move ${money(Math.round(capital * 0.2))} of the position to ${second} (bridge about ${money((GAS[second] ?? GAS_DEFAULT)[1])}) so the wallet is counted on two deployments.`,
-        capital: 0,
-        fees: r2((GAS[second] ?? GAS_DEFAULT)[1] + 3 * (GAS[second] ?? GAS_DEFAULT)[0]),
-        minutes: 20,
-        span: 'week 3',
+        action: `${p.name} runs on ${p.chains.length} chains: in week 3 move ${money(Math.round(capital * 0.2))} of the position to ${second} (bridge about ${money(f2)}, then about ${money(g2)} a transaction) so the wallet is counted on two deployments.`,
+        capital: 0, fees: r2(f2 + 3 * g2), txs: 3, minutes: 20, span: 'week 3',
       });
     }
   }
   steps.push({
     step: 'Track',
     action: `Track ${track} every week. Its TVL moved ${mom === null ? 'an unreported amount' : `${mom > 0 ? '+' : ''}${mom.toFixed(1)}%`} in the snapshot week; a fall of 25% or more in a week, or a paused withdrawal, is the signal to exit.`,
-    capital: 0,
-    fees: 0,
-    minutes: weeks * 5,
-    span: 'weekly',
+    capital: 0, fees: 0, txs: 0, minutes: weeks * 5, span: 'weekly',
   });
   steps.push({
     step: 'Exit',
-    action: `${lane === 'related' ? 'A related token already trades, so a separate airdrop is less likely: cap this farm at the stated capital. ' : ''}Withdraw and claim only through links on the app itself; never sign a "claim" from a direct message. Unwind costs about ${money(txs * gas + fund)}.`,
-    capital: 0,
-    fees: r2(txs * gas + fund),
-    minutes: 15,
-    span: `after week ${weeks}`,
+    action: `${lane === 'related' ? 'A related token already trades, so a separate airdrop is less likely: keep this farm at the stated capital. ' : ''}Withdraw, then claim only through links on the app itself; never sign a "claim" from a direct message. Unwinding is ${txs} transactions plus the move back to an exchange.`,
+    capital: 0, fees: r2(txs * gas + fund), txs, minutes: 15, span: `after week ${weeks}`,
   });
   const fees = r2(steps.reduce((a, s) => a + s.fees, 0));
   const minutes = steps.reduce((a, s) => a + s.minutes, 0);
-  return { chain, gas_per_tx: gas, capital, fees_total: fees, hands_on_minutes: minutes, weeks, steps };
+  const txTotal = steps.reduce((a, s) => a + s.txs, 0);
+  const extra = weeks * weeklyFee;
+  const per_chain = p.chains
+    .filter((c) => GAS[c] !== undefined)
+    .slice(0, 6)
+    .map((c) => ({ chain: c, gas: GAS[c]![0], total: r2(txTotal * GAS[c]![0] + 2 * GAS[c]![1] + extra) }));
+  return { chain, gas_per_tx: gas, capital, fees_total: fees, hands_on_minutes: minutes, weeks, txs: txTotal, per_chain, steps };
+}
+
+/** One-line budget that opens the board's farm_steps. */
+export function budgetLine(p: Plan): string {
+  const dear = [...p.per_chain].sort((a, b) => b.total - a.total)[0];
+  const cmpTo = dear !== undefined && dear.chain !== p.chain && dear.total > p.fees_total * 1.5 ? ` The same plan on ${dear.chain} would burn about ${money(dear.total)} in gas and fees.` : '';
+  return `Budget: ${money(p.capital)} of capital for ${p.weeks} weeks on ${p.chain}, about ${money(p.fees_total)} of gas and fees in all (${p.txs} transactions at about ${money(p.gas_per_tx)} each), and ${(p.hands_on_minutes / 60).toFixed(1)} hours hands-on.${cmpTo}`;
 }
 
 const r2 = (n: number): number => Math.round(n * 100) / 100;
 
 /** The plan as the board's farm_steps strings: action, then cost and time, 20..600 characters. */
 export function stepStrings(plan: Plan): string[] {
-  return plan.steps.map((s) => {
+  return [budgetLine(plan)].concat(plan.steps.map((s) => {
     const cost = `${s.capital > 0 ? `${money(s.capital)} capital + ` : ''}${s.fees > 0 ? `~${money(s.fees)} gas/fees` : 'no gas'}`;
     let t = `${s.step}: ${s.action} Cost: ${cost}. Time: ${s.minutes} min hands-on, ${s.span}.`;
     if (t.length > 600) t = `${t.slice(0, 597)}...`;
     return t;
-  });
+  }));
 }
 
 // ------------------------------------------------------------------ the board

@@ -29,4 +29,4 @@ for (const [file, hash] of VIEWS) {
   ], { stdio: 'ignore' });
   process.stdout.write(`${file}  #${hash}  ${statSync(target).size} bytes\n`);
 }
-rmSync(profile, { recursive: true, force: true });
+try { rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 400 }); } catch { /* Chrome may still hold its cache; the folder is git-ignored */ }
