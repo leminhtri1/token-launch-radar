@@ -214,11 +214,13 @@
     var ev = r.odds * drop[1], net = ev - cost, roi = cost > 0 ? ev / cost : 0, perHour = net / hours;
     var verdict, why;
     if (net <= 0) { verdict = 'Skip'; why = 'expected $' + Math.round(ev) + ' is below its $' + Math.round(cost) + ' cost'; }
-    else if (perHour >= A.farm_hour && roi >= A.farm_roi && r.odds >= A.farm_odds) { verdict = 'Farm'; why = 'pays $' + Math.round(perHour) + '/h at ' + roi.toFixed(1) + '× its cost, ' + Math.round(r.odds * 100) + '% peer odds'; }
+    else if (perHour >= A.farm_hour && roi >= A.farm_roi && r.odds >= A.farm_odds && r.lane !== 'related') { verdict = 'Farm'; why = 'pays $' + Math.round(perHour) + '/h at ' + roi.toFixed(1) + '× its cost, ' + Math.round(r.odds * 100) + '% peer odds'; }
     else {
       verdict = 'Watch';
       why = perHour < A.farm_hour ? 'positive, but $' + Math.round(perHour) + '/h is under $' + A.farm_hour + '/h'
-        : roi < A.farm_roi ? 'positive, but only ' + roi.toFixed(1) + '× its cost' : 'peer odds ' + Math.round(r.odds * 100) + '% are under ' + Math.round(A.farm_odds * 100) + '%';
+        : roi < A.farm_roi ? 'positive, but only ' + roi.toFixed(1) + '× its cost'
+        : r.odds < A.farm_odds ? 'peer odds ' + Math.round(r.odds * 100) + '% are under ' + Math.round(A.farm_odds * 100) + '%'
+        : 'positive, but a related token already trades, so its own airdrop is less likely';
     }
     return {
       opp: r4(opp), cost: r4(cost), hours: r4(hours), farmers: Math.round(farmers), weight: weight,

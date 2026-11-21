@@ -124,7 +124,7 @@
       '<div class="panel pad"><h3>Peer odds · logistic on ' + pop.length + ' protocols</h3><table class="mini"><tbody>' +
       ['intercept', 'ln TVL', 'tanh(7d / 20)', 'ln(1 + years listed)', 'no listing date', 'ln chains'].map(function (t, j) { return '<tr><td>' + t + '</td><td class="n">' + sg(R.odds.b[j]) + '</td></tr>'; }).join('') +
       '</tbody></table><p>Plus ridge-shrunk family and category terms (λ ' + best.lambda + ' by 5-fold log loss). Out of fold: AUC <b>' + best.auc.toFixed(3) + '</b>, log loss ' + best.logloss.toFixed(3) + ' vs ' + best.base_logloss.toFixed(3) + ' for the base rate. ' + (R.odds.b[2] < 0 ? 'Growing' : 'Falling') + ' TVL and ' + (R.odds.b[3] > 0 ? 'fewer' : 'more') + ' years listed make a token less common so far.</p></div>' +
-      '<div class="panel pad"><h3>Verdict rule</h3><p>' + vtag('Farm') + ' net ≥ $' + A.farm_hour + '/h, payoff ≥ ' + A.farm_roi + '× cost, odds ≥ ' + od(A.farm_odds) + '<br>' + vtag('Watch') + ' positive but short of one bar<br>' + vtag('Skip') + ' expected payoff below cost</p></div></aside>';
+      '<div class="panel pad"><h3>Verdict rule</h3><p>' + vtag('Farm') + ' net ≥ $' + A.farm_hour + '/h, payoff ≥ ' + A.farm_roi + '× cost, odds ≥ ' + od(A.farm_odds) + '<br>' + vtag('Watch') + ' positive but short of one bar, or a related token trades<br>' + vtag('Skip') + ' expected payoff below cost</p></div></aside>';
   }
 
   // ------------------------------------------------------------ the board
