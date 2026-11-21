@@ -140,7 +140,7 @@
     var top = Object.keys(cats).sort(function (a, b) { return cats[b] - cats[a] || (a < b ? -1 : 1); }).slice(0, 7);
     return '<aside class="rail">' +
       '<div class="panel pad"><h3>How implied value is set</h3>' +
-      '<div class="formula">TVL × <em>multiple</em><br>× momentum(7d) × track(tokenless days)<br>× breadth(chains) × confidence(TVL)<br>× 0.25 if a related token trades</div>' +
+      '<div class="formula">implied = TVL × <em>multiple</em><br>  × momentum(change_7d)<br>  × track(days with no token)<br>  × breadth(chains) × confidence(TVL)<br>  × ' + K.related_haircut + ' if a related token trades</div>' +
       '<p><b>Multiple</b> = median market cap / TVL of the snapshot’s ' + D.peers.length + ' protocols whose token trades, per category, shrunk toward its family and the global median by sample size (K = ' + K.shrink + '). No name is hard-coded.</p>' +
       '<div class="legend">' + tag('watchlist') + '<span>house list: TVL ≥ ' + usd(D.floor_usd) + '</span>' + tag('early') + '<span>off the list, no token</span>' + tag('related') + '<span>same-name token, ×' + K.related_haircut + '</span></div>' +
       '<p class="check"><span class="ok">✓</span> This page re-ran the calibration: ' + CAT_OK + '/' + catList.length + ' category multiples and ' + MATCH + '/' + D.rows.length + ' implied values equal board.json.</p></div>' +
@@ -154,7 +154,7 @@
 
   // ------------------------------------------------------------ the board
   var COLS = [
-    ['rank', '#', 'rk'], ['name', 'Protocol', ''], ['cat', 'Category', ''], ['chains', 'Chains', ''],
+    ['rank', '#', 'rk'], ['name', 'Protocol', ''], ['cat', 'Category', ''], ['chains', 'Chains · farm plan', ''],
     ['tvl', 'TVL', 'n'], ['c7', '7d', 'n'], ['age', 'Tokenless', 'n'], ['v', 'Implied value · band', 'n'], ['score', 'Score', '']
   ];
   function keyOf(r, k) {
@@ -184,7 +184,7 @@
     return '<tr data-slug="' + esc(r.slug) + '"><td class="rk">' + r.rank + '</td>' +
       '<td><span class="pname">' + esc(r.name) + '</span>' + tag(r.lane) + '</td>' +
       '<td class="catc">' + esc(r.cat || 'Uncategorised') + '<span class="sub">' + x(r.f.multiple) + ' multiple</span></td>' +
-      '<td class="chains">' + esc(r.chains.slice(0, 2).join(', ')) + more + '</td>' +
+      '<td class="chains">' + esc(r.chains.slice(0, 2).join(', ')) + more + '<span class="sub farm">' + dollars(r.plan.capital) + ' · ' + dollars(r.plan.fees_total) + ' gas · ' + r.plan.weeks + 'w</span></td>' +
       '<td class="n">' + usd(r.tvl) + '</td><td class="n">' + pct(r.c7) + '</td><td class="n">' + age(r.age) + '</td>' +
       '<td class="n"><span class="val">' + usd(r.v) + '</span><span class="band">' + usd(r.lo) + ' – ' + usd(r.hi) + '</span></td>' +
       '<td><span class="bar' + (r.lane === 'related' ? ' rel' : '') + '"><i style="width:' + r.score + '%"></i></span><span class="sc">' + r.score + '</span></td></tr>';

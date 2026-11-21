@@ -15,8 +15,8 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { FAMILIES, GAS, K, MODEL_VERSION, boardIssue, buildRadar, parseSnapshot, stepStrings } from './lib/model.ts';
-import type { Row } from './lib/model.ts';
+import { FAMILIES, GAS, K, MODEL_VERSION, SnapshotError, boardIssue, buildRadar, median, parseSnapshot, stepStrings } from './lib/model.ts';
+import type { Row, Snapshot } from './lib/model.ts';
 import { buildDossier } from './vendor/makefun-board.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
@@ -39,8 +39,16 @@ const inputFile = inputArg.endsWith('.json') ? inputArg : join(inputArg, 'snapsh
 if (!existsSync(inputFile)) fail(`no snapshot at ${inputFile}: pass --input <snapshot.json|dir>`, 2);
 const out = arg('output', process.env.MAKEFUN_OUTPUT_DIR ?? '/output');
 
-const snapshot = parseSnapshot(readFileSync(inputFile, 'utf8'));
+let snapshot: Snapshot;
+try {
+  snapshot = parseSnapshot(readFileSync(inputFile, 'utf8'));
+} catch (err) {
+  fail(err instanceof SnapshotError ? err.message : `cannot read ${inputFile}: ${String(err)}`, 2);
+}
 const radar = buildRadar(snapshot);
+const covered = new Set(radar.rows.map((r) => r.slug));
+const uncovered = snapshot.watchlist.filter((w) => !covered.has(w));
+if (uncovered.length > 0) fail(`watchlist slugs the snapshot does not list: ${uncovered.join(', ')}`);
 
 // ---------------------------------------------------------------- board.json
 
@@ -70,6 +78,22 @@ const boardRow = (r: Row) => ({
 const rows = radar.rows.map(boardRow);
 const issue = boardIssue(rows, snapshot);
 if (issue !== null) fail(`the board would fail the gate: ${issue}`);
+const silent = rows.filter((r) => r.lane !== 'related' && !r.farm_steps.some((t) => t.includes('records no token')));
+if (silent.length > 0) fail(`${silent[0]!.slug}'s plan never says it records no token`);
+
+const lanes = { watchlist: 0, early: 0, related: 0 };
+for (const r of radar.rows) lanes[r.lane]++;
+const values = radar.rows.map((r) => r.implied_value_usd);
+const summary = {
+  rows: rows.length,
+  lanes,
+  watchlist_covered: `${snapshot.watchlist.length}/${snapshot.watchlist.length}`,
+  calibration_peers: radar.peers.length,
+  total_implied_usd: values.reduce((a, v) => a + v, 0),
+  median_implied_usd: median(values),
+  global_multiple: radar.calibration.global.multiple,
+  top: rows.slice(0, 5).map((r) => `${r.rank}. ${r.name} ${r.implied_value_usd}`),
+};
 
 const modelNote = {
   version: MODEL_VERSION,
@@ -81,7 +105,7 @@ const modelNote = {
   note: 'Implied value is this radar\'s claim of what a token would be worth if the protocol\'s record stayed as it is; it does not predict whether or when a token is issued. A protocol here records no token in the snapshot; that is not proof it has none.',
 };
 mkdirSync(out, { recursive: true });
-writeFileSync(join(out, 'board.json'), `${JSON.stringify({ model: modelNote, calibration: radar.calibration, excluded: radar.excluded, rows })}\n`);
+writeFileSync(join(out, 'board.json'), `${JSON.stringify({ model: modelNote, summary, calibration: radar.calibration, excluded: radar.excluded, rows })}\n`);
 
 // ---------------------------------------------------------------- data.js
 
@@ -123,8 +147,6 @@ for (const n of shots) if (!IMAGE_NAME.test(n)) fail(`screenshots/${n} is not a 
 
 writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEXT_MAX_BYTES, screenshots: { max: 4, max_bytes: 524_288 }, dashboard: { max_files: 400, max_bytes: 4_194_304 } }));
 
-const lanes = { watchlist: 0, early: 0, related: 0 };
-for (const r of radar.rows) lanes[r.lane]++;
 process.stdout.write(
   `token radar: ${snapshot.protocols.length} protocols, ${radar.peers.length} calibration peers, ${rows.length} rows ` +
     `(${lanes.watchlist} watchlist, ${lanes.early} early, ${lanes.related} related-token)\n` +

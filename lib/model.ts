@@ -312,7 +312,18 @@ export interface Plan {
   steps: PlanStep[];
 }
 
-const money = (n: number): string => (n >= 100 ? `$${Math.round(n).toLocaleString('en-US')}` : n >= 1 ? `$${n.toFixed(2).replace(/\.00$/, '')}` : `$${n.toFixed(2)}`);
+/** Dollars as text, with thousands grouped by hand (no locale data, so every run spells it the same). */
+const money = (n: number): string => (n >= 100 ? `$${String(Math.round(n)).replace(/\B(?=(\d{3})+$)/g, ',')}` : n >= 1 ? `$${n.toFixed(2).replace(/\.00$/, '')}` : `$${n.toFixed(2)}`);
+
+/** The weekly touch that keeps a wallet active, by family: what an active user of that kind of app does. */
+const WEEKLY_ACTION: Record<string, string> = {
+  Lending: 'repay 10% of the loan and borrow it again, or add $50 of supply',
+  Trading: 'trade the week\'s volume and close every position by the weekend',
+  'Vaults & yield': 'top up $50 or claim and compound the vault\'s rewards',
+  'Stables & RWA': 'claim the accrued yield and restake it, or add $50 to the position',
+  'Chains & infra': 'make one swap, one deposit and one withdrawal in the ecosystem\'s apps',
+  Other: 'claim, compound or top up the position by $50',
+};
 
 /** The chain to farm on: the protocol's main (first) chain, unless that costs a dollar or more a transaction and a cheap chain is among its first four. */
 export function chainFor(p: SnapshotProtocol): { chain: string; gas: number; fund: number; alt: string | null } {
@@ -419,7 +430,7 @@ export function buildPlan(p: SnapshotProtocol, age: number | null, lane: Lane): 
   steps.push({ step: 'Enter', action: `${action}.`, capital, fees: r2(txs * gas), txs, minutes: 10 + txs * 5, span: 'day 0' });
   steps.push({
     step: 'Repeat',
-    action: `Once a week, claim or compound and make one extra interaction (top-up, rebalance or a swap) so the address is active in every weekly snapshot for ${weeks} weeks: ${weeks * 2} transactions in all${weeklyFee > 0 ? `, plus about ${money(weeklyFee)} a week in trading fees` : ''}.`,
+    action: `Once a week for ${weeks} weeks, ${WEEKLY_ACTION[familyOf(p.category)]}, so the address is active in every weekly snapshot: ${weeks * 2} transactions in all${weeklyFee > 0 ? `, plus about ${money(weeklyFee)} a week in trading fees` : ''}.`,
     capital: 0, fees: r2(weeks * (2 * gas + weeklyFee)), txs: weeks * 2, minutes: weeks * 10, span: `${weeks} weeks`,
   });
   if (p.chains.length >= 3) {
@@ -435,7 +446,7 @@ export function buildPlan(p: SnapshotProtocol, age: number | null, lane: Lane): 
   }
   steps.push({
     step: 'Track',
-    action: `Track ${track} every week. Its TVL moved ${mom === null ? 'an unreported amount' : `${mom > 0 ? '+' : ''}${mom.toFixed(1)}%`} in the snapshot week; a fall of 25% or more in a week, or a paused withdrawal, is the signal to exit.`,
+    action: `${p.name} records no token in the snapshot; watch its own site for a points page or token news. Track ${track} every week. Its TVL moved ${mom === null ? 'an unreported amount' : `${mom > 0 ? '+' : ''}${mom.toFixed(1)}%`} in the snapshot week; a fall of 25% or more in a week, or a paused withdrawal, is the signal to exit.`,
     capital: 0, fees: 0, txs: 0, minutes: weeks * 5, span: 'weekly',
   });
   steps.push({
