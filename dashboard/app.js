@@ -140,7 +140,7 @@
     var top = Object.keys(cats).sort(function (a, b) { return cats[b] - cats[a] || (a < b ? -1 : 1); }).slice(0, 7);
     return '<aside class="rail">' +
       '<div class="panel pad"><h3>How implied value is set</h3>' +
-      '<div class="formula">implied = TVL × <em>multiple</em><br>  × momentum(change_7d)<br>  × track(days with no token)<br>  × breadth(chains) × confidence(TVL)<br>  × ' + K.related_haircut + ' if a related token trades</div>' +
+      '<div class="formula">implied = TVL × <em>multiple</em><br>  × momentum(change_7d)<br>  × track(days with no token)<br>  × breadth(chains)<br>  × confidence(TVL)<br>  × ' + K.related_haircut + ' if related token</div>' +
       '<p><b>Multiple</b> = median market cap / TVL of the snapshot’s ' + D.peers.length + ' protocols whose token trades, per category, shrunk toward its family and the global median by sample size (K = ' + K.shrink + '). No name is hard-coded.</p>' +
       '<div class="legend">' + tag('watchlist') + '<span>house list: TVL ≥ ' + usd(D.floor_usd) + '</span>' + tag('early') + '<span>off the list, no token</span>' + tag('related') + '<span>same-name token, ×' + K.related_haircut + '</span></div>' +
       '<p class="check"><span class="ok">✓</span> This page re-ran the calibration: ' + CAT_OK + '/' + catList.length + ' category multiples and ' + MATCH + '/' + D.rows.length + ' implied values equal board.json.</p></div>' +
